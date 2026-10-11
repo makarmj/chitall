@@ -1,3 +1,4 @@
+import CoreText
 import SwiftData
 import UIKit
 import XCTest
@@ -325,7 +326,7 @@ final class AppTests: XCTestCase {
         controller.view.layoutIfNeeded()
 
         model.show(chapter: 2)
-        controller.update(styleKey: model.styleKey, highlights: [], decorationsToken: 0, navigation: model.navigation)
+        controller.update(style: model.style, highlights: [], decorationsToken: 0, navigation: model.navigation)
         controller.view.layoutIfNeeded()
 
         // The previous chapter was inserted above and the offset compensated: chapter 2 is still on top.
@@ -346,6 +347,89 @@ final class AppTests: XCTestCase {
         XCTAssertEqual(controller.loadedChapterIndices.last, model.chapters.count - 1)
         let indices = controller.loadedChapterIndices
         XCTAssertEqual(indices, Array((indices.first ?? 0)...(indices.last ?? 0)), "loaded chapters are contiguous")
+    }
+
+    // MARK: Appearance
+
+    func testReaderFontsExistWithCyrillic() {
+        for font in ReaderFont.allCases {
+            let uiFont = font.font(size: 17)
+            if let family = font.familyName {
+                XCTAssertEqual(uiFont.familyName, family, "\(font.title) is installed")
+            }
+            // Every book font must draw Cyrillic itself, without falling back to another font.
+            let ctFont = uiFont as CTFont
+            var glyphs = [CGGlyph](repeating: 0, count: 6)
+            let characters = Array("Жёлудь".utf16)
+            XCTAssertTrue(CTFontGetGlyphsForCharacters(ctFont, characters, &glyphs, characters.count), "\(font.title) has Cyrillic")
+        }
+    }
+
+    func testThemeAndTypographyChangeTheStyleKey() {
+        let base = ReaderStyle(fontSize: 19, lineSpacing: 1.4)
+        var dark = base
+        dark.theme = .black
+        var wide = base
+        wide.margins = .wide
+        var ragged = base
+        ragged.justified = false
+        XCTAssertEqual(Set([base.key, dark.key, wide.key, ragged.key]).count, 4)
+        XCTAssertEqual(ReaderTheme.system.resolved(for: .dark), .wood)
+        XCTAssertEqual(ReaderTheme.system.resolved(for: .light), .paper)
+        XCTAssertTrue(ReaderTheme.black.isDark)
+        XCTAssertFalse(ReaderTheme.white.isDark)
+    }
+
+    func testEveryStyleKeepsTheCharacterMapExact() throws {
+        let book = try FB2Parser.parse(sampleData()).book
+        let text = ChapterText(chapter: book.chapters[1])
+        for font in ReaderFont.allCases {
+            for theme in [ReaderTheme.white, .black] {
+                let style = ReaderStyle(fontSize: 21, lineSpacing: 1.65, font: font, theme: theme, justified: font != .ptSans, margins: .wide)
+                let rendered = ChapterRenderer.render(text, book: book, style: style)
+                XCTAssertEqual(rendered.string, text.string)
+            }
+        }
+    }
+
+    func testPageNumberingMatchesThePagesShown() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 22, lineSpacing: 1.4), initialHighlight: nil)
+        let size = CGSize(width: 320, height: 520)
+        model.requestPageNumbering(layoutKey: "test", pageSize: size)
+        for _ in 0..<100 where model.pageNumbering == nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let numbering = try XCTUnwrap(model.pageNumbering)
+        XCTAssertEqual(numbering.layoutKey, "test")
+        // The background pass counts exactly the pages page mode shows.
+        let expected = model.chapters.indices.map { Paginator.paginate(try! XCTUnwrap(model.rendered(chapter: $0)).attributed, pageSize: size).count }
+        XCTAssertEqual(numbering.counts, expected)
+        XCTAssertEqual(numbering.total, expected.reduce(0, +))
+        XCTAssertEqual(numbering.pageNumber(chapter: 0, page: 0), 1)
+        XCTAssertEqual(numbering.pageNumber(chapter: 1, page: 0), expected[0] + 1)
+        XCTAssertNil(numbering.pageNumber(chapter: 1, page: expected[1]))
+    }
+
+    func testProgressSliderJumpsToTheRightChapter() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        model.go(toProgression: 0.999)
+        XCTAssertEqual(model.chapterIndex, model.chapters.count - 1)
+        model.go(toProgression: 0)
+        XCTAssertEqual(model.chapterIndex, 0)
+        XCTAssertEqual(model.navigation?.utf16Offset, 0)
+        XCTAssertEqual(model.chapterTitle(atProgression: 0.999), model.chapters.last?.title)
     }
 
     func testIllustrationTallerThanPageStillPaginates() throws {

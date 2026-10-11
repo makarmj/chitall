@@ -2,24 +2,18 @@ import UIKit
 
 enum ReaderPreferences {
     static let themeKey = "app.theme"
+    static let readerThemeKey = "reader.theme"
+    static let fontKey = "reader.font"
     static let fontSizeKey = "reader.fontSize"
-    static let lineSpacingKey = "reader.lineSpacing"
+    static let spacingKey = "reader.spacing"
+    static let marginsKey = "reader.margins"
+    static let justifiedKey = "reader.justified"
     static let lastColorKey = "reader.lastHighlightColor"
     static let modeKey = "reader.mode"
     static let pageHintShownKey = "reader.pageHintShown"
 
     static let defaultFontSize: Double = 19
-    static let fontSizeRange: ClosedRange<Double> = 14...30
-    static let defaultLineSpacing: Double = 1.35
-    static let lineSpacingRange: ClosedRange<Double> = 1.0...2.0
-}
-
-/// Typography settings the attributed text depends on. Colors are dynamic and not part of it.
-struct ReaderStyle: Equatable {
-    var fontSize: CGFloat
-    var lineSpacing: CGFloat
-
-    var key: String { "\(fontSize)|\(lineSpacing)" }
+    static let fontSizeRange: ClosedRange<Double> = 14...32
 }
 
 /// One chapter ready for `UITextView`: the attributed string has exactly the characters of
@@ -36,12 +30,15 @@ struct RenderedChapter {
 enum ChapterRenderer {
     static let noteScheme = "chitall-note"
     static let linkScheme = "chitall-link"
+    /// Language attribute TextKit uses for hyphenation (CoreText's kCTLanguageAttributeName).
+    static let languageKey = NSAttributedString.Key("NSLanguage")
 
     static func render(_ text: ChapterText, book: ReadableBook, style: ReaderStyle) -> NSAttributedString {
         let size = style.fontSize
         let result = NSMutableAttributedString(string: text.string, attributes: [
-            .font: font(size: size),
-            .foregroundColor: Palette.inkUI,
+            .font: style.font.font(size: size),
+            .foregroundColor: style.colors.text,
+            languageKey: style.language,
         ])
 
         var previous: Block?
@@ -50,7 +47,7 @@ enum ChapterRenderer {
             let isLast = index == text.segments.count - 1
             // Paragraph attributes cover the block and its trailing "\n".
             let paragraphRange = NSRange(location: segment.range.lowerBound, length: segment.range.count + (isLast ? 0 : 1))
-            let look = BlockLook(block: block, previous: previous, size: size, lineSpacing: style.lineSpacing)
+            let look = BlockLook(block: block, previous: previous, style: style)
             if paragraphRange.length > 0 {
                 result.addAttributes([
                     .paragraphStyle: look.paragraph,
@@ -61,7 +58,7 @@ enum ChapterRenderer {
 
             for run in block.runs {
                 let range = NSRange(location: segment.range.lowerBound + run.range.lowerBound, length: run.range.count)
-                result.addAttributes(inlineAttributes(run, look: look), range: range)
+                result.addAttributes(inlineAttributes(run, look: look, style: style), range: range)
             }
 
             if block.role == .image, segment.range.count == 1 {
@@ -90,16 +87,7 @@ enum ChapterRenderer {
         URLComponents(url: url, resolvingAgainstBaseURL: false)?.path
     }
 
-    static func font(size: CGFloat, weight: UIFont.Weight = .regular, traits: UIFontDescriptor.SymbolicTraits = []) -> UIFont {
-        let base = UIFont.systemFont(ofSize: size, weight: weight)
-        var descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
-        if !traits.isEmpty, let styled = descriptor.withSymbolicTraits(descriptor.symbolicTraits.union(traits)) {
-            descriptor = styled
-        }
-        return UIFont(descriptor: descriptor, size: size)
-    }
-
-    private static func inlineAttributes(_ run: InlineRun, look: BlockLook) -> [NSAttributedString.Key: Any] {
+    private static func inlineAttributes(_ run: InlineRun, look: BlockLook, style: ReaderStyle) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [:]
         var traits = look.traits
         if run.style.contains(.emphasis) { traits.insert(.traitItalic) }
@@ -115,13 +103,14 @@ enum ChapterRenderer {
         if run.style.contains(.code) {
             attributes[.font] = UIFont.monospacedSystemFont(ofSize: size * 0.9, weight: .regular)
         } else {
-            attributes[.font] = font(size: size, weight: look.weight, traits: traits)
+            attributes[.font] = style.font.font(size: size, weight: look.weight, traits: traits)
         }
         if run.style.contains(.strikethrough) {
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
         if let link = run.link, let url = linkURL(link, isNote: run.isNoteReference) {
             attributes[.link] = url
+            attributes[.foregroundColor] = style.colors.accent
         }
         return attributes
     }
@@ -134,25 +123,29 @@ private struct BlockLook {
     let traits: UIFontDescriptor.SymbolicTraits
     let color: UIColor
     let paragraph: NSParagraphStyle
+    let font: UIFont
 
-    var font: UIFont { ChapterRenderer.font(size: size, weight: weight, traits: traits) }
-
-    init(block: Block, previous: Block?, size base: CGFloat, lineSpacing: CGFloat) {
+    init(block: Block, previous: Block?, style: ReaderStyle) {
+        let base = style.fontSize
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineHeightMultiple = lineSpacing
+        paragraph.lineHeightMultiple = style.lineSpacing
         paragraph.lineBreakMode = .byWordWrapping
         paragraph.paragraphSpacing = base * 0.3
+        // Body text: justified with hyphenation like a printed book, or ragged right.
+        paragraph.alignment = style.justified ? .justified : .natural
+        paragraph.hyphenationFactor = style.justified ? 0.9 : 0.3
 
         var size = base
         var weight: UIFont.Weight = .regular
         var traits: UIFontDescriptor.SymbolicTraits = []
-        var color = Palette.inkUI
+        var color = style.colors.text
 
         switch block.role {
         case .title:
             size = base * (block.titleLevel == 0 ? 1.55 : block.titleLevel == 1 ? 1.4 : 1.18)
             weight = .semibold
             paragraph.alignment = .center
+            paragraph.hyphenationFactor = 0
             paragraph.lineHeightMultiple = 1.1
             let startsTitle = previous?.role != .title
             paragraph.paragraphSpacingBefore = startsTitle && previous != nil ? base * 1.6 : 0
@@ -161,9 +154,12 @@ private struct BlockLook {
             size = base * 1.05
             weight = .semibold
             paragraph.alignment = .center
+            paragraph.hyphenationFactor = 0
             paragraph.paragraphSpacingBefore = base * 0.8
             paragraph.paragraphSpacing = base * 0.5
         case .verse:
+            paragraph.alignment = .natural
+            paragraph.hyphenationFactor = 0
             paragraph.firstLineHeadIndent = base * 2
             paragraph.headIndent = base * 3
             paragraph.paragraphSpacing = 0
@@ -172,11 +168,13 @@ private struct BlockLook {
         case .textAuthor, .date:
             size = base * 0.9
             traits = .traitItalic
-            color = Palette.secondaryInkUI
+            color = style.colors.secondary
             paragraph.alignment = .right
+            paragraph.hyphenationFactor = 0
             paragraph.paragraphSpacing = base * 0.6
         case .tableCell:
             size = base * 0.92
+            paragraph.alignment = .natural
             paragraph.headIndent = base
             paragraph.firstLineHeadIndent = base
         case .image:
@@ -191,7 +189,10 @@ private struct BlockLook {
 
         if block.context.contains(.epigraph) {
             size = min(size, base * 0.92)
-            if block.role == .paragraph { traits.insert(.traitItalic) }
+            if block.role == .paragraph {
+                traits.insert(.traitItalic)
+                paragraph.alignment = .natural
+            }
             paragraph.headIndent = max(paragraph.headIndent, base * 5)
             paragraph.firstLineHeadIndent = max(paragraph.firstLineHeadIndent, base * 5)
         }
@@ -212,6 +213,7 @@ private struct BlockLook {
         self.traits = traits
         self.color = color
         self.paragraph = paragraph
+        self.font = style.font.font(size: size, weight: weight, traits: traits)
     }
 }
 

@@ -57,6 +57,7 @@ final class ReaderModel {
     }
 
     struct PageStatus: Equatable {
+        let chapter: Int
         let page: Int
         let pageCount: Int
     }
@@ -65,17 +66,22 @@ final class ReaderModel {
     private(set) var phase: Phase = .loading
     private(set) var book: ReadableBook?
     private(set) var chapterIndex = 0
-    private(set) var styleKey = ""
+    /// Typography and theme of the page; changing it re-renders chapters on demand.
+    private(set) var style = ReaderStyle(fontSize: 19, lineSpacing: 1.4)
     private(set) var navigation: NavigationRequest?
     private(set) var pageStatus: PageStatus?
     private(set) var searchHighlight: ChapterRange?
+    /// Page counts of every chapter for the current page layout (computed in the background).
+    private(set) var pageNumbering: PageNumbering?
     var chromeVisible = true
     /// The query of the search sheet, kept while the book is open.
     @ObservationIgnored var lastSearchQuery = ""
 
     private let files: BookFileStore
     @ObservationIgnored private var service: LocatorService?
-    @ObservationIgnored private var style = ReaderStyle(fontSize: 19, lineSpacing: 1.35)
+    @ObservationIgnored private var bookLanguage = "ru"
+    @ObservationIgnored private var numberingTask: Task<Void, Never>?
+    @ObservationIgnored private var numberingKey: String?
     @ObservationIgnored private var renderCache: [Int: RenderedChapter] = [:]
     @ObservationIgnored private var resolutions: [UUID: (json: String, result: LocatorResolution)] = [:]
     @ObservationIgnored private var lastPosition: (chapter: Int, utf16: Int)?
@@ -94,9 +100,11 @@ final class ReaderModel {
         return book.chapters[chapterIndex]
     }
 
-    /// The current chapter, rendered in the current typography (scroll mode shows this).
+    var styleKey: String { style.key }
+
+    /// The current chapter, rendered in the current typography.
     var rendered: RenderedChapter? {
-        _ = styleKey // re-render dependants when the typography changes
+        _ = style // re-render dependants when the typography changes
         return rendered(chapter: chapterIndex)
     }
 
@@ -104,8 +112,6 @@ final class ReaderModel {
 
     func load(style: ReaderStyle, initialHighlight: Highlight?) async {
         guard book == nil else { return }
-        self.style = style
-        styleKey = style.key
         let fileName = storedBook.fileName
         let fingerprint = storedBook.fingerprint
         let files = self.files
@@ -115,6 +121,8 @@ final class ReaderModel {
             }.value
             book = parsed
             service = LocatorService(book: parsed, fingerprint: fingerprint)
+            bookLanguage = Self.hyphenationLanguage(parsed.metadata.language)
+            self.style = withBookLanguage(style)
 
             if let initialHighlight, let range = resolve(initialHighlight)?.range,
                let chapter = parsed.chapterIndex(ofBlock: range.start.block) {
@@ -176,6 +184,27 @@ final class ReaderModel {
     var hasNextChapter: Bool { chapterIndex + 1 < chapters.count }
     var hasPreviousChapter: Bool { chapterIndex > 0 }
 
+    /// The progress slider: jump to a share of the whole book.
+    func go(toProgression progression: Double) {
+        guard let book, let position = book.position(atProgression: progression),
+              let chapter = book.chapterIndex(ofBlock: position.block) else { return }
+        clearSearchHighlight()
+        show(chapter: chapter, at: position, placement: .top)
+    }
+
+    /// Chapter title at a share of the book, for the slider preview.
+    func chapterTitle(atProgression progression: Double) -> String? {
+        guard let book, let position = book.position(atProgression: progression),
+              let chapter = book.chapterIndex(ofBlock: position.block) else { return nil }
+        return book.chapters[chapter].title
+    }
+
+    /// Opens the place of a highlight (from the contents sheet).
+    func go(to highlight: Highlight) {
+        guard let range = resolve(highlight)?.range, let chapter = book?.chapterIndex(ofBlock: range.start.block) else { return }
+        show(chapter: chapter, at: range.start, placement: .upperThird)
+    }
+
     func go(toBlock ordinal: Int) {
         guard let chapter = book?.chapterIndex(ofBlock: ordinal) else { return }
         show(chapter: chapter, at: BlockPosition(block: ordinal, offset: 0), placement: .top)
@@ -187,12 +216,24 @@ final class ReaderModel {
         navigation = NavigationRequest(chapter: position.chapter, utf16Offset: position.utf16, placement: .top)
     }
 
-    /// New typography: cached chapters are re-rendered on demand; views keep their place.
+    /// New typography or theme: cached chapters are re-rendered on demand; views keep their place.
     func restyle(_ newStyle: ReaderStyle) {
-        guard newStyle != style else { return }
-        style = newStyle
+        let adjusted = withBookLanguage(newStyle)
+        guard adjusted != style else { return }
         renderCache = [:]
-        styleKey = newStyle.key
+        style = adjusted
+    }
+
+    private func withBookLanguage(_ style: ReaderStyle) -> ReaderStyle {
+        var copy = style
+        copy.language = bookLanguage
+        return copy
+    }
+
+    /// FB2 `lang` such as "ru", "be", "ru-RU" → a language code TextKit can hyphenate.
+    static func hyphenationLanguage(_ lang: String?) -> String {
+        guard let lang, let code = lang.split(whereSeparator: { $0 == "-" || $0 == "_" }).first, !code.isEmpty else { return "ru" }
+        return code.lowercased()
     }
 
     // MARK: Position reports from the views
@@ -200,9 +241,31 @@ final class ReaderModel {
     /// Page mode: the user turned to another page (possibly in another chapter).
     func didShowPage(chapter: Int, page: Int, pageCount: Int, firstOffset: Int) {
         if chapter != chapterIndex { chapterIndex = chapter }
-        let status = PageStatus(page: page, pageCount: pageCount)
+        let status = PageStatus(chapter: chapter, page: page, pageCount: pageCount)
         if pageStatus != status { pageStatus = status }
         saveReadingPosition(chapter: chapter, atUTF16: firstOffset)
+    }
+
+    /// Paginates the whole book for a page layout off the main thread, so pages can show
+    /// "118 из 294". Uses exactly the renderer and paginator the pages use.
+    func requestPageNumbering(layoutKey: String, pageSize: CGSize) {
+        guard let book, numberingKey != layoutKey, pageNumbering?.layoutKey != layoutKey else { return }
+        numberingKey = layoutKey
+        numberingTask?.cancel()
+        let style = self.style
+        numberingTask = Task.detached(priority: .utility) { [weak self] in
+            var counts: [Int] = []
+            for chapter in book.chapters {
+                if Task.isCancelled { return }
+                let attributed = ChapterRenderer.render(ChapterText(chapter: chapter), book: book, style: style)
+                counts.append(Paginator.paginate(attributed, pageSize: pageSize).count)
+            }
+            let numbering = PageNumbering(layoutKey: layoutKey, counts: counts)
+            await MainActor.run { [weak self] in
+                guard let self, self.numberingKey == layoutKey else { return }
+                self.pageNumbering = numbering
+            }
+        }
     }
 
     /// Continuous mode: the reader scrolled; `save` once scrolling has settled.

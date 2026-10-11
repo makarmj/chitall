@@ -63,10 +63,10 @@ struct RootView: View {
         .tint(Palette.accent)
         .preferredColorScheme(colorScheme)
         .fullScreenCover(item: $coordinator.readerRequest) { request in
+            // The reader picks light or dark itself from its page theme.
             ReaderView(book: request.book, files: coordinator.files, initialHighlightID: request.highlightID)
                 .environment(coordinator)
                 .tint(Palette.accent)
-                .preferredColorScheme(colorScheme)
         }
         .overlay {
             if coordinator.isImporting { ImportingOverlay() }

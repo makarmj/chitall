@@ -8,7 +8,8 @@ import UIKit
 /// (no waiting for a double tap, which would select a word), a tap in the middle opens a
 /// highlight or toggles the reader controls. Long press selection works everywhere.
 final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDelegate {
-    static let turnZoneFraction: CGFloat = 0.3
+    /// Edge strips that turn pages, as in Yandex Books (about a quarter of the width each).
+    static let turnZoneFraction: CGFloat = 0.25
 
     let textView = ReaderTextView()
     var actions = ReaderTextActions()
@@ -28,7 +29,6 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = Palette.backgroundUI
         textView.delegate = self
         addSubview(textView)
         for tap in [edgeTap, centerTap] {
@@ -45,6 +45,13 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     override func layoutSubviews() {
         super.layoutSubviews()
         textView.frame = textFrame
+    }
+
+    func apply(colors: ThemeColors) {
+        backgroundColor = colors.background
+        textView.backgroundColor = colors.background
+        textView.tintColor = colors.accent
+        textView.linkTextAttributes = [.foregroundColor: colors.accent]
     }
 
     func configure(chapter: Int, range: NSRange, content: NSAttributedString, decorations: [HighlightDecoration]) {

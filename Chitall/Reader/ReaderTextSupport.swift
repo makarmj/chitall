@@ -134,9 +134,7 @@ final class ReaderTextView: UITextView {
         clipsToBounds = true
         dataDetectorTypes = []
         adjustsFontForContentSizeCategory = false
-        backgroundColor = Palette.backgroundUI
-        tintColor = Palette.accentUI
-        linkTextAttributes = [.foregroundColor: Palette.accentUI]
+        backgroundColor = .clear
         isFindInteractionEnabled = false // the reader has its own whole-book search
     }
 

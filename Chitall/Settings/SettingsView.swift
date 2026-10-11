@@ -6,7 +6,7 @@ struct SettingsView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @AppStorage(ReaderPreferences.themeKey) private var themeRaw = AppTheme.system.rawValue
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
-    @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
+    @AppStorage(ReaderPreferences.readerThemeKey) private var readerThemeRaw = ReaderTheme.system.rawValue
     @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
     @Query private var books: [StoredBook]
     @Query private var highlights: [Highlight]
@@ -15,24 +15,29 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Оформление") {
+                Section {
+                    Picker("Тема приложения", selection: $themeRaw) {
+                        ForEach(AppTheme.allCases) { theme in
+                            Text(theme.title).tag(theme.rawValue)
+                        }
+                    }
+                    Picker("Тема страницы", selection: $readerThemeRaw) {
+                        ForEach(ReaderTheme.allCases) { theme in
+                            Text(theme.title).tag(theme.rawValue)
+                        }
+                    }
                     Picker("Режим чтения", selection: $modeRaw) {
                         ForEach(ReadingMode.allCases) { mode in
                             Text(mode.title).tag(mode.rawValue)
                         }
                     }
-                    Picker("Тема", selection: $themeRaw) {
-                        ForEach(AppTheme.allCases) { theme in
-                            Text(theme.title).tag(theme.rawValue)
-                        }
-                    }
                     Stepper(value: $fontSize, in: ReaderPreferences.fontSizeRange, step: 1) {
                         Text("Размер шрифта: \(Int(fontSize))")
                     }
-                    VStack(alignment: .leading) {
-                        Text("Межстрочный интервал: \(lineSpacing, specifier: "%.2f")")
-                        Slider(value: $lineSpacing, in: ReaderPreferences.lineSpacingRange, step: 0.05)
-                    }
+                } header: {
+                    Text("Оформление")
+                } footer: {
+                    Text("Шрифт, интервал, поля и яркость — в книге, кнопка «Aa».")
                 }
 
                 Section("Теги") {

@@ -4,8 +4,14 @@ import SwiftUI
 struct ReaderView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
-    @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
+    @AppStorage(ReaderPreferences.fontKey) private var fontRaw = ReaderFont.newYork.rawValue
+    @AppStorage(ReaderPreferences.spacingKey) private var spacingRaw = ReaderSpacing.normal.rawValue
+    @AppStorage(ReaderPreferences.marginsKey) private var marginsRaw = ReaderMargins.normal.rawValue
+    @AppStorage(ReaderPreferences.justifiedKey) private var justified = true
+    @AppStorage(ReaderPreferences.readerThemeKey) private var themeRaw = ReaderTheme.system.rawValue
     @AppStorage(ReaderPreferences.lastColorKey) private var lastColorRaw = HighlightColor.default.rawValue
     @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
     @AppStorage(ReaderPreferences.pageHintShownKey) private var pageHintShown = false
@@ -15,9 +21,14 @@ struct ReaderView: View {
     @State private var editingHighlight: Highlight?
     @State private var highlightToDelete: Highlight?
     @State private var shownNote: NoteContent?
-    @State private var showsContents = false
+    @State private var contentsTab: ContentsTab?
     @State private var showsSettings = false
     @State private var showsSearch = false
+    @State private var showsBookInfo = false
+    @State private var bookExport: BookExportItem?
+    @State private var scrubValue: Double?
+    /// Brightness chosen in the reader; `nil` while untouched (the system value stays).
+    @State private var brightness: Double?
 
     private let initialHighlightID: UUID?
 
@@ -31,12 +42,32 @@ struct ReaderView: View {
         self.initialHighlightID = initialHighlightID
     }
 
+    private var theme: ReaderTheme {
+        (ReaderTheme(rawValue: themeRaw) ?? .system).resolved(for: colorScheme)
+    }
+
+    private var colors: ThemeColors { theme.colors }
+
     private var style: ReaderStyle {
-        ReaderStyle(fontSize: CGFloat(fontSize), lineSpacing: CGFloat(lineSpacing))
+        ReaderStyle(
+            fontSize: CGFloat(fontSize),
+            lineSpacing: (ReaderSpacing(rawValue: spacingRaw) ?? .normal).lineHeightMultiple,
+            font: ReaderFont(rawValue: fontRaw) ?? .newYork,
+            theme: theme,
+            justified: justified,
+            margins: ReaderMargins(rawValue: marginsRaw) ?? .normal
+        )
     }
 
     private var mode: ReadingMode {
         ReadingMode(rawValue: modeRaw) ?? .pages
+    }
+
+    /// Explicit themes set light or dark for the whole reader (status bar, sheets);
+    /// "Как в системе" leaves it to the device.
+    private var preferredScheme: ColorScheme? {
+        guard ReaderTheme(rawValue: themeRaw) != .system else { return nil }
+        return theme.isDark ? .dark : .light
     }
 
     private var textActions: ReaderTextActions {
@@ -72,11 +103,11 @@ struct ReaderView: View {
 
     var body: some View {
         ZStack {
-            Palette.background.ignoresSafeArea()
+            Color(uiColor: colors.background).ignoresSafeArea()
             switch model.phase {
             case .loading:
                 ProgressView("Открываю книгу…")
-                    .foregroundStyle(Palette.secondaryInk)
+                    .foregroundStyle(Color(uiColor: colors.secondary))
             case let .failed(message):
                 failure(message)
             case .ready:
@@ -84,8 +115,9 @@ struct ReaderView: View {
                 case .pages:
                     PagedBookView(
                         model: model,
-                        styleKey: model.styleKey,
+                        style: model.style,
                         decorations: model.decorationsAroundCurrentChapter(for: highlights),
+                        numbering: model.pageNumbering,
                         navigation: model.navigation,
                         actions: textActions
                     )
@@ -93,7 +125,7 @@ struct ReaderView: View {
                 case .scroll:
                     ContinuousBookView(
                         model: model,
-                        styleKey: model.styleKey,
+                        style: model.style,
                         highlights: highlights,
                         decorationsToken: decorationsToken,
                         navigation: model.navigation,
@@ -107,7 +139,7 @@ struct ReaderView: View {
             if model.chromeVisible { topBar.transition(.move(edge: .top).combined(with: .opacity)) }
         }
         .overlay(alignment: .bottom) {
-            if model.chromeVisible, model.isReady { bottomBar.transition(.move(edge: .bottom).combined(with: .opacity)) }
+            if model.chromeVisible, model.isReady { bottomPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
         }
         .overlay {
             if mode == .pages, model.isReady, !pageHintShown {
@@ -117,14 +149,28 @@ struct ReaderView: View {
         }
         // In page mode the status bar stays: hiding it would change the page size and reflow the book.
         .statusBarHidden(mode == .scroll && !model.chromeVisible)
+        .preferredColorScheme(preferredScheme)
         .task {
             let initial = initialHighlightID.flatMap { id in highlights.first { $0.id == id } }
             await model.load(style: style, initialHighlight: initial)
         }
-        .onChange(of: fontSize) { model.restyle(style) }
-        .onChange(of: lineSpacing) { model.restyle(style) }
+        .onChange(of: style) { model.restyle(style) }
         .onChange(of: modeRaw) { model.navigateToCurrentPosition() }
-        .onDisappear { try? context.save() }
+        .onChange(of: brightness) {
+            if let brightness { ReaderBrightness.apply(brightness) }
+        }
+        .onChange(of: scenePhase) {
+            // Give the system its brightness back while Chitall is not on screen.
+            if scenePhase == .active {
+                if let brightness { ReaderBrightness.apply(brightness) }
+            } else {
+                ReaderBrightness.restore()
+            }
+        }
+        .onDisappear {
+            ReaderBrightness.restore()
+            try? context.save()
+        }
         .sheet(item: $editingHighlight, onDismiss: deletePendingHighlight) { highlight in
             HighlightEditorSheet(highlight: highlight, onDelete: {
                 highlightToDelete = highlight
@@ -141,123 +187,191 @@ struct ReaderView: View {
                 showsSearch = false
             }
         }
-        .sheet(isPresented: $showsContents) {
-            TableOfContentsView(
+        .sheet(item: $contentsTab) { tab in
+            ContentsSheet(
                 model: model,
-                unresolvedCount: model.unresolvedCount(in: highlights),
+                highlights: highlights,
+                initialTab: tab,
                 onSelectChapter: { index in
                     model.show(chapter: index)
-                    showsContents = false
+                    contentsTab = nil
                 },
                 onSelectEntry: { entry in
                     model.go(toBlock: entry.firstBlock)
-                    showsContents = false
+                    contentsTab = nil
+                },
+                onSelectHighlight: { highlight in
+                    model.go(to: highlight)
+                    contentsTab = nil
                 }
             )
         }
         .sheet(isPresented: $showsSettings) {
-            ReaderSettingsView()
-                .presentationDetents([.height(430)])
+            ReaderSettingsView(brightness: $brightness)
+                .presentationDetents([.height(500), .large])
+                .presentationBackground(Color(uiColor: colors.chrome))
+        }
+        .sheet(isPresented: $showsBookInfo) {
+            BookInfoSheet(book: model.storedBook, metadata: model.book?.metadata, highlightCount: highlights.count)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $bookExport) { item in
+            ExportSheet(export: item.export)
         }
     }
 
     // MARK: Bars
 
     private var topBar: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             Button {
                 try? context.save()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.body.weight(.semibold))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 40, height: 40)
+                    .background(Color(uiColor: colors.background).opacity(0.7), in: Circle())
             }
             .accessibilityLabel("Закрыть книгу")
 
-            VStack(spacing: 2) {
-                Text(model.currentChapter?.title ?? model.storedBook.title)
-                    .font(Typography.serif(.subheadline, weight: .semibold))
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
                 Text(model.storedBook.title)
-                    .font(.caption2)
-                    .foregroundStyle(Palette.secondaryInk)
+                    .font(Typography.serif(.headline, weight: .semibold))
+                    .lineLimit(1)
+                if !model.storedBook.authors.isEmpty {
+                    Text(model.storedBook.authors)
+                        .font(.subheadline)
+                        .foregroundStyle(Color(uiColor: colors.secondary))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+
+            Menu {
+                Button { showsSearch = true } label: { Label("Поиск по книге", systemImage: "magnifyingglass") }
+                Button { contentsTab = .chapters } label: { Label("Оглавление", systemImage: "list.bullet") }
+                Button { contentsTab = .highlights } label: { Label("Выделения книги", systemImage: "text.quote") }
+                Button { bookExport = makeBookExport() } label: { Label("Экспорт материалов книги", systemImage: "square.and.arrow.up") }
+                    .disabled(highlights.isEmpty)
+                Button { showsBookInfo = true } label: { Label("О книге", systemImage: "info.circle") }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 40, height: 40)
+                    .background(Color(uiColor: colors.background).opacity(0.7), in: Circle())
+            }
+            .accessibilityLabel("Ещё")
+            .disabled(!model.isReady)
+        }
+        .foregroundStyle(Color(uiColor: colors.text))
+        .padding(.horizontal, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 10)
+        .background(Color(uiColor: colors.chrome).ignoresSafeArea(edges: .top))
+        .overlay(alignment: .bottom) { Rectangle().fill(Color(uiColor: colors.divider)).frame(height: 0.5) }
+    }
+
+    private var bottomPanel: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Button { contentsTab = .chapters } label: {
+                    Image(systemName: "list.bullet").font(.title3)
+                }
+                .accessibilityLabel("Оглавление")
+                Spacer()
+                Text(chapterStatus)
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(Color(uiColor: colors.secondary))
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity)
 
-            Button { showsSearch = true } label: {
-                Image(systemName: "magnifyingglass").frame(width: 32, height: 36)
-            }
-            .accessibilityLabel("Поиск по книге")
-            .disabled(!model.isReady)
+            Slider(
+                value: Binding(
+                    get: { scrubValue ?? model.storedBook.readingProgress },
+                    set: { scrubValue = $0 }
+                ),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if !editing, let value = scrubValue {
+                        model.go(toProgression: value)
+                        scrubValue = nil
+                    }
+                }
+            )
+            .tint(Color(uiColor: colors.accent))
+            .accessibilityLabel("Положение в книге")
+            .accessibilityValue(MaterialExport.percent(scrubValue ?? model.storedBook.readingProgress))
 
-            Button { showsContents = true } label: {
-                Image(systemName: "list.bullet").frame(width: 32, height: 36)
-            }
-            .accessibilityLabel("Оглавление")
-            .disabled(!model.isReady)
-
-            Button { showsSettings = true } label: {
-                Image(systemName: "textformat.size").frame(width: 32, height: 36)
-            }
-            .accessibilityLabel("Оформление и режим чтения")
-        }
-        .foregroundStyle(Palette.ink)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Palette.background.opacity(0.96))
-        .overlay(alignment: .bottom) { Divider().background(Palette.divider) }
-    }
-
-    private var bottomBar: some View {
-        HStack {
-            Button { model.showPreviousChapter() } label: {
-                Image(systemName: "chevron.left").frame(width: 44, height: 36)
-            }
-            .disabled(!model.hasPreviousChapter)
-            .accessibilityLabel("Предыдущая глава")
-
-            Spacer()
-            Text(progressText)
-                .font(.caption)
+            Text(progressStatus)
+                .font(.footnote)
                 .monospacedDigit()
-                .foregroundStyle(Palette.secondaryInk)
-            Spacer()
+                .foregroundStyle(Color(uiColor: colors.secondary))
+                .lineLimit(1)
 
-            Button { model.showNextChapter() } label: {
-                Image(systemName: "chevron.right").frame(width: 44, height: 36)
+            HStack {
+                toolbarButton("text.quote", "Выделения книги") { contentsTab = .highlights }
+                Spacer()
+                toolbarButton("magnifyingglass", "Поиск по книге") { showsSearch = true }
+                Spacer()
+                toolbarButton("textformat.size", "Оформление") { showsSettings = true }
+                Spacer()
+                toolbarButton("square.and.arrow.up", "Экспорт материалов книги") { bookExport = makeBookExport() }
+                    .disabled(highlights.isEmpty)
             }
-            .disabled(!model.hasNextChapter)
-            .accessibilityLabel("Следующая глава")
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
         }
-        .foregroundStyle(Palette.ink)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Palette.background.opacity(0.96))
-        .overlay(alignment: .top) { Divider().background(Palette.divider) }
+        .foregroundStyle(Color(uiColor: colors.text))
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
+        .background(Color(uiColor: colors.chrome).ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) { Rectangle().fill(Color(uiColor: colors.divider)).frame(height: 0.5) }
     }
 
-    private var progressText: String {
-        let percent = Int((model.storedBook.readingProgress * 100).rounded())
-        let chapter = "гл. \(model.chapterIndex + 1) из \(model.chapters.count)"
-        if mode == .pages, let status = model.pageStatus {
-            let left = status.pageCount - status.page - 1
-            let rest = left > 0 ? "ещё \(left) стр. в главе" : "последняя стр. главы"
-            return "\(chapter) · \(rest) · \(percent) %"
+    private func toolbarButton(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .frame(width: 44, height: 40)
         }
-        return "\(chapter) · \(percent) %"
+        .accessibilityLabel(label)
+    }
+
+    /// "ещё 19 стр." in the chapter (pages) or the chapter title (scroll).
+    private var chapterStatus: String {
+        if mode == .pages, let status = model.pageStatus, status.chapter == model.chapterIndex {
+            let left = status.pageCount - status.page - 1
+            return left > 0 ? "ещё \(left) стр. в главе" : "последняя стр. главы"
+        }
+        return model.currentChapter?.title ?? ""
+    }
+
+    /// "стр. 118 из 294 · 44 % книги" or, while dragging the slider, where it will land.
+    private var progressStatus: String {
+        if let value = scrubValue {
+            let chapter = model.chapterTitle(atProgression: value) ?? ""
+            return "\(MaterialExport.percent(value)) · \(chapter)"
+        }
+        let percent = "\(MaterialExport.percent(model.storedBook.readingProgress)) от всей книги"
+        if mode == .pages, let status = model.pageStatus, let numbering = model.pageNumbering,
+           let page = numbering.pageNumber(chapter: status.chapter, page: status.page) {
+            return "стр. \(page) из \(numbering.total) · \(percent)"
+        }
+        return percent
     }
 
     private func failure(_ message: String) -> some View {
         VStack(spacing: 16) {
             Image(systemName: "book.closed")
                 .font(.system(size: 40, weight: .light))
-                .foregroundStyle(Palette.secondaryInk)
+                .foregroundStyle(Color(uiColor: colors.secondary))
             Text(message)
                 .font(.callout)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(Palette.ink)
+                .foregroundStyle(Color(uiColor: colors.text))
             Button("Закрыть") { dismiss() }
                 .buttonStyle(.borderedProminent)
         }
@@ -296,6 +410,22 @@ struct ReaderView: View {
         context.delete(highlight)
         try? context.save()
     }
+
+    private func makeBookExport() -> BookExportItem {
+        let filter = MaterialFilter(bookFingerprint: model.storedBook.fingerprint)
+        return BookExportItem(export: MaterialExport(
+            items: highlights.compactMap { $0.materialItem() },
+            exportedAt: .now,
+            selectionDescription: filter.summary(bookTitle: model.storedBook.title),
+            generator: MaterialExportWriter.generator,
+            timeZone: .current
+        ))
+    }
+}
+
+struct BookExportItem: Identifiable {
+    let id = UUID()
+    let export: MaterialExport
 }
 
 struct NoteSheet: View {

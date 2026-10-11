@@ -113,17 +113,16 @@ extension Paginator {
 /// Where a page's text sits inside the screen. The paginator and the page view use the same
 /// numbers, so the text laid out on screen is exactly the text measured for the page.
 struct PageGeometry: Equatable {
-    static let horizontalMargin: CGFloat = 24
     static let headerHeight: CGFloat = 30
     static let footerHeight: CGFloat = 30
 
     let textFrame: CGRect
 
-    init(bounds: CGRect, safeArea: UIEdgeInsets) {
+    init(bounds: CGRect, safeArea: UIEdgeInsets, margin: CGFloat = ReaderMargins.normal.points) {
         let top = safeArea.top + Self.headerHeight
         let bottom = safeArea.bottom + Self.footerHeight
-        let left = max(safeArea.left, 0) + Self.horizontalMargin
-        let right = max(safeArea.right, 0) + Self.horizontalMargin
+        let left = max(safeArea.left, 0) + margin
+        let right = max(safeArea.right, 0) + margin
         textFrame = CGRect(
             x: left,
             y: top,
@@ -133,4 +132,32 @@ struct PageGeometry: Equatable {
     }
 
     var textSize: CGSize { textFrame.size }
+}
+
+/// Global page numbers: page counts of every chapter for one page layout.
+struct PageNumbering: Equatable {
+    let layoutKey: String
+    let counts: [Int]
+    private let firstPages: [Int]
+
+    init(layoutKey: String, counts: [Int]) {
+        self.layoutKey = layoutKey
+        self.counts = counts
+        var running = 0
+        var firsts: [Int] = []
+        for count in counts {
+            firsts.append(running)
+            running += count
+        }
+        self.firstPages = firsts
+        self.total = running
+    }
+
+    let total: Int
+
+    /// 1-based page number in the whole book.
+    func pageNumber(chapter: Int, page: Int) -> Int? {
+        guard firstPages.indices.contains(chapter), page < counts[chapter] else { return nil }
+        return firstPages[chapter] + page + 1
+    }
 }

@@ -9,7 +9,7 @@ import UIKit
 /// one is inserted above with the scroll offset compensated, so nothing jumps.
 struct ContinuousBookView: UIViewControllerRepresentable {
     let model: ReaderModel
-    var styleKey: String
+    var style: ReaderStyle
     var highlights: [Highlight]
     /// Changes whenever anything that affects decorations changes (colour, thought, search hit).
     var decorationsToken: Int
@@ -22,7 +22,7 @@ struct ContinuousBookView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: ContinuousReaderController, context: Context) {
         controller.actions = actions
-        controller.update(styleKey: styleKey, highlights: highlights, decorationsToken: decorationsToken, navigation: navigation)
+        controller.update(style: style, highlights: highlights, decorationsToken: decorationsToken, navigation: navigation)
     }
 
     static func dismantleUIViewController(_ controller: ContinuousReaderController, coordinator: ()) {
@@ -32,7 +32,6 @@ struct ContinuousBookView: UIViewControllerRepresentable {
 
 final class ContinuousReaderController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     static let chunkHeight: CGFloat = 1400
-    static let horizontalMargin: CGFloat = 24
     static let maximumLoadedChapters = 5
 
     var actions = ReaderTextActions()
@@ -54,7 +53,7 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
     var loadedChapterIndices: [Int] { loaded.map(\.chapter) }
     var visiblePosition: (chapter: Int, offset: Int)? { currentPosition() }
     private var textWidth: CGFloat = 0
-    private var styleKey = ""
+    private var style: ReaderStyle?
     private var highlights: [Highlight] = []
     private var decorationsToken = 0
     private var decorationCache: [Int: [HighlightDecoration]] = [:]
@@ -77,8 +76,6 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = Palette.backgroundUI
-        tableView.backgroundColor = Palette.backgroundUI
         tableView.separatorStyle = .none
         tableView.allowsSelection = false
         tableView.estimatedRowHeight = 0
@@ -95,7 +92,8 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let width = max(0, view.bounds.width - view.safeAreaInsets.left - view.safeAreaInsets.right - 2 * Self.horizontalMargin).rounded(.down)
+        guard let style else { return }
+        let width = max(0, view.bounds.width - view.safeAreaInsets.left - view.safeAreaInsets.right - 2 * style.margins.points).rounded(.down)
         guard width > 1, width != textWidth else { return }
         // Width changed (first layout, rotation): cut the chapters again and stay on the same text.
         let anchor = currentPosition()
@@ -110,7 +108,7 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     // MARK: Updates from SwiftUI
 
-    func update(styleKey newStyleKey: String, highlights newHighlights: [Highlight], decorationsToken token: Int, navigation: NavigationRequest?) {
+    func update(style newStyle: ReaderStyle, highlights newHighlights: [Highlight], decorationsToken token: Int, navigation: NavigationRequest?) {
         highlights = newHighlights
         if token != decorationsToken {
             decorationsToken = token
@@ -118,11 +116,19 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
             refreshVisibleDecorations()
         }
 
-        if newStyleKey != styleKey {
+        if newStyle != style {
             let anchor = currentPosition()
-            let hadStyle = !styleKey.isEmpty
-            styleKey = newStyleKey
-            if hadStyle, let anchor, navigation?.id == handledNavigation || navigation == nil {
+            let hadStyle = style != nil
+            style = newStyle
+            view.overrideUserInterfaceStyle = newStyle.theme.isDark ? .dark : .light
+            view.backgroundColor = newStyle.colors.background
+            tableView.backgroundColor = newStyle.colors.background
+            tableView.indicatorStyle = newStyle.theme.isDark ? .white : .black
+            // Margins change the text width; a width of 0 makes the next layout pass recompute it.
+            let width = max(0, view.bounds.width - view.safeAreaInsets.left - view.safeAreaInsets.right - 2 * newStyle.margins.points).rounded(.down)
+            textWidth = view.bounds.width > 1 ? width : 0
+            decorationCache = [:]
+            if hadStyle, textWidth > 1, let anchor, navigation?.id == handledNavigation || navigation == nil {
                 show(chapter: anchor.chapter, offset: anchor.offset, placement: .top)
             }
         }
@@ -323,6 +329,7 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         guard let chunkCell = cell as? ChunkCell, let ref = row(at: indexPath.row) else { return cell }
         let chapter = loaded[ref.slot]
         chunkCell.textWidth = textWidth
+        if let style { chunkCell.apply(colors: style.colors) }
         chunkCell.fragment.actions = actions
         chunkCell.fragment.onSelectionChange = { [weak self] hasSelection in
             // While text is selected, a drag moves the selection handles, not the book.
@@ -371,8 +378,6 @@ final class ChunkCell: UITableViewCell {
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
-        backgroundColor = Palette.backgroundUI
-        contentView.backgroundColor = Palette.backgroundUI
         selectionStyle = .none
         contentView.addSubview(fragment)
     }
@@ -380,6 +385,12 @@ final class ChunkCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("ChunkCell is created in code")
+    }
+
+    func apply(colors: ThemeColors) {
+        backgroundColor = colors.background
+        contentView.backgroundColor = colors.background
+        fragment.apply(colors: colors)
     }
 
     override func layoutSubviews() {

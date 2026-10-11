@@ -5,8 +5,9 @@ import UIKit
 /// edge, continuing seamlessly from one chapter into the next (DECISIONS.md §15).
 struct PagedBookView: UIViewControllerRepresentable {
     let model: ReaderModel
-    var styleKey: String
+    var style: ReaderStyle
     var decorations: [Int: [HighlightDecoration]]
+    var numbering: PageNumbering?
     var navigation: NavigationRequest?
     var actions: ReaderTextActions
 
@@ -16,7 +17,7 @@ struct PagedBookView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: PagedReaderController, context: Context) {
         controller.actions = actions
-        controller.update(styleKey: styleKey, decorations: decorations, navigation: navigation)
+        controller.update(style: style, decorations: decorations, numbering: numbering, navigation: navigation)
     }
 
     static func dismantleUIViewController(_ controller: PagedReaderController, coordinator: ()) {
@@ -42,8 +43,9 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
     private var layouts: [Int: ChapterPages] = [:]
     private var layoutKey = ""
     private var geometry: PageGeometry?
-    private var styleKey = ""
+    private var style: ReaderStyle?
     private var decorations: [Int: [HighlightDecoration]] = [:]
+    private var numbering: PageNumbering?
     private var handledNavigation: UUID?
     private var pendingNavigation: NavigationRequest?
 
@@ -65,8 +67,6 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = Palette.backgroundUI
-        pager.view.backgroundColor = Palette.backgroundUI
         pager.dataSource = self
         pager.delegate = self
         addChild(pager)
@@ -78,12 +78,14 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let newGeometry = PageGeometry(bounds: view.bounds, safeArea: view.safeAreaInsets)
+        guard let style else { return }
+        let newGeometry = PageGeometry(bounds: view.bounds, safeArea: view.safeAreaInsets, margin: style.margins.points)
         guard view.bounds.width > 1, newGeometry != geometry else { return }
         // Size changed (first layout, rotation): paginate again and stay on the same text.
         let anchor = currentPage.map { (chapter: $0.location.chapter, offset: $0.range.location) }
         geometry = newGeometry
         invalidateLayouts()
+        model.requestPageNumbering(layoutKey: layoutKey, pageSize: newGeometry.textSize)
         if let pending = pendingNavigation {
             pendingNavigation = nil
             show(chapter: pending.chapter, offset: pending.utf16Offset)
@@ -94,13 +96,26 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
 
     // MARK: Updates from SwiftUI
 
-    func update(styleKey newStyleKey: String, decorations newDecorations: [Int: [HighlightDecoration]], navigation: NavigationRequest?) {
-        if newStyleKey != styleKey {
+    func update(style newStyle: ReaderStyle, decorations newDecorations: [Int: [HighlightDecoration]], numbering newNumbering: PageNumbering?, navigation: NavigationRequest?) {
+        if newStyle != style {
             let anchor = currentPage.map { (chapter: $0.location.chapter, offset: $0.range.location) }
-            styleKey = newStyleKey
+            style = newStyle
+            applyTheme(newStyle)
+            // Margins change the page size: recompute it on the next layout pass.
+            geometry = view.bounds.width > 1
+                ? PageGeometry(bounds: view.bounds, safeArea: view.safeAreaInsets, margin: newStyle.margins.points)
+                : nil
             invalidateLayouts()
-            if let anchor, navigation?.id == handledNavigation || navigation == nil {
+            if let geometry { model.requestPageNumbering(layoutKey: layoutKey, pageSize: geometry.textSize) }
+            if let anchor, geometry != nil, navigation?.id == handledNavigation || navigation == nil {
                 show(chapter: anchor.chapter, offset: anchor.offset)
+            }
+        }
+
+        if newNumbering != numbering {
+            numbering = newNumbering
+            for case let page as PageViewController in pager.viewControllers ?? [] {
+                page.pageLabel = pageLabel(for: page.location, pageCount: page.pageCount)
             }
         }
 
@@ -121,8 +136,23 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         }
     }
 
+    private func applyTheme(_ style: ReaderStyle) {
+        let colors = style.colors
+        view.overrideUserInterfaceStyle = style.theme.isDark ? .dark : .light
+        view.backgroundColor = colors.background
+        pager.view.backgroundColor = colors.background
+    }
+
+    /// "118 из 294" when the whole book is paginated for this layout, else "5 / 23" in the chapter.
+    private func pageLabel(for location: PageLocation, pageCount: Int) -> String {
+        if let numbering, numbering.layoutKey == layoutKey, let global = numbering.pageNumber(chapter: location.chapter, page: location.page) {
+            return "\(global) из \(numbering.total)"
+        }
+        return "\(location.page + 1) / \(pageCount)"
+    }
+
     private func invalidateLayouts() {
-        layoutKey = "\(styleKey)|\(geometry.map { "\($0.textSize.width)x\($0.textSize.height)" } ?? "-")"
+        layoutKey = "\(style?.key ?? "-")|\(geometry.map { "\($0.textSize.width)x\($0.textSize.height)" } ?? "-")"
         layouts = [:]
     }
 
@@ -140,7 +170,7 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
     }
 
     private func makePage(_ location: PageLocation) -> PageViewController? {
-        guard let geometry, let rendered = model.rendered(chapter: location.chapter),
+        guard let geometry, let style, let rendered = model.rendered(chapter: location.chapter),
               let pages = pages(for: location.chapter), pages.ranges.indices.contains(location.page) else { return nil }
         let range = pages.ranges[location.page]
         let page = PageViewController(
@@ -149,8 +179,10 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
             pageCount: pages.count,
             chapterTitle: model.chapters[location.chapter].title,
             content: Paginator.pageContent(of: rendered.attributed, range: range),
-            geometry: geometry
+            geometry: geometry,
+            colors: style.colors
         )
+        page.pageLabel = pageLabel(for: location, pageCount: pages.count)
         page.apply(decorations: decorations[location.chapter] ?? [])
         page.actions = actions
         page.onTurn = { [weak self] forward in self?.turn(forward: forward) }
@@ -289,14 +321,20 @@ final class PageViewController: UIViewController {
     private let footer = UILabel()
     private let content: NSAttributedString
     private let geometry: PageGeometry
+    private let colors: ThemeColors
     private var decorations: [HighlightDecoration] = []
+    /// "118 из 294" once the whole book is paginated, "5 / 23" (in the chapter) until then.
+    var pageLabel = "" {
+        didSet { footer.text = pageLabel }
+    }
 
-    init(location: PageLocation, range: NSRange, pageCount: Int, chapterTitle: String, content: NSAttributedString, geometry: PageGeometry) {
+    init(location: PageLocation, range: NSRange, pageCount: Int, chapterTitle: String, content: NSAttributedString, geometry: PageGeometry, colors: ThemeColors) {
         self.location = location
         self.range = range
         self.pageCount = pageCount
         self.content = content
         self.geometry = geometry
+        self.colors = colors
         super.init(nibName: nil, bundle: nil)
         header.text = chapterTitle
         footer.text = "\(location.page + 1) / \(pageCount)"
@@ -309,8 +347,9 @@ final class PageViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = Palette.backgroundUI
+        view.backgroundColor = colors.background
 
+        fragment.apply(colors: colors)
         fragment.turnZones = true
         fragment.actions = actions
         fragment.onTurn = onTurn
@@ -321,7 +360,7 @@ final class PageViewController: UIViewController {
 
         for label in [header, footer] {
             label.font = UIFont.systemFont(ofSize: 12)
-            label.textColor = Palette.secondaryInkUI
+            label.textColor = colors.secondary
             label.textAlignment = .center
             label.lineBreakMode = .byTruncatingTail
             label.isAccessibilityElement = false
