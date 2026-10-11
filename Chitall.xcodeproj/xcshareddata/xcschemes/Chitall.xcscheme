@@ -41,16 +41,6 @@
                ReferencedContainer = "container:Chitall.xcodeproj">
             </BuildableReference>
          </TestableReference>
-         <TestableReference
-            skipped = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "ChitallCoreTests"
-               BuildableName = "ChitallCoreTests"
-               BlueprintName = "ChitallCoreTests"
-               ReferencedContainer = "container:ChitallCore">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

@@ -8,8 +8,10 @@
 2. Открыть `Chitall.xcodeproj`. Xcode сам подтянет локальный пакет `ChitallCore`.
 3. Target **Chitall** → Signing & Capabilities: выбрать свою команду. Если `com.chitall.reader` занят, заменить Bundle Identifier (и у `ChitallTests` тоже).
 4. Собрать на симуляторе iPhone (iOS 17 и последней версии) и на устройстве.
-5. `⌘U` — запускает `ChitallTests` (приложение) и `ChitallCoreTests` (пакет).
-6. В терминале: `swift test --package-path ChitallCore` — на macOS это дополнительно проверяет ветки, недоступные на Windows: SHA-256 через CryptoKit и распаковку deflate через `Compression`.
+5. `⌘U` — запускает `ChitallTests` (приложение) на выбранном симуляторе или устройстве.
+6. В терминале: `swift test --package-path ChitallCore` — тесты ядра (на macOS дополнительно проверяются SHA-256 через CryptoKit и распаковка deflate через `Compression`).
+
+Шаги 4–6 на чистом облачном Маке уже выполняет GitHub Actions при каждом `git push` (`.github/workflows/build.yml`); результат — во вкладке Actions репозитория.
 
 Если проект не открывается (ошибка разбора `project.pbxproj`):
 1. File → New → Project → iOS App, имя `Chitall`, интерфейс SwiftUI, хранилище None, тесты включены; сохранить во временную папку.

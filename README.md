@@ -21,7 +21,9 @@ tools/              запуск тестов ядра на Windows, прове�
 
 ## Запуск
 
-На Mac: открыть `Chitall.xcodeproj`, выбрать команду подписи, запустить на iPhone или симуляторе; `⌘U` — все тесты.
+На Mac: открыть `Chitall.xcodeproj`, выбрать команду подписи, запустить на iPhone или симуляторе; `⌘U` — тесты приложения. Пошагово для своего iPhone — [docs/run-on-iphone.md](docs/run-on-iphone.md).
+
+При каждом `git push` GitHub Actions собирает приложение на macOS, гоняет тесты ядра и приложения в симуляторе iPhone (`.github/workflows/build.yml`).
 
 Тесты ядра без Xcode (macOS, Linux или Windows со Swift 6):
 
