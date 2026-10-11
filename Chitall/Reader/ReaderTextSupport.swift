@@ -110,12 +110,12 @@ enum Swatch {
     }
 }
 
-/// `UITextView` on an explicit TextKit 1 stack (DECISIONS.md §1). Scrolling for the
-/// continuous mode; fixed-size and non-scrolling for one page in page mode.
+/// Fixed-size, non-scrolling `UITextView` on an explicit TextKit 1 stack (DECISIONS.md §1):
+/// one page in page mode, one chunk in the continuous scroll.
 final class ReaderTextView: UITextView {
     private let storage: NSTextStorage
 
-    init(scrollable: Bool = true) {
+    init() {
         let storage = NSTextStorage()
         let layoutManager = NSLayoutManager()
         layoutManager.allowsNonContiguousLayout = false
@@ -129,22 +129,15 @@ final class ReaderTextView: UITextView {
 
         isEditable = false
         isSelectable = true
+        isScrollEnabled = false
+        textContainerInset = .zero
+        clipsToBounds = true
         dataDetectorTypes = []
         adjustsFontForContentSizeCategory = false
         backgroundColor = Palette.backgroundUI
         tintColor = Palette.accentUI
         linkTextAttributes = [.foregroundColor: Palette.accentUI]
         isFindInteractionEnabled = false // the reader has its own whole-book search
-
-        if scrollable {
-            isScrollEnabled = true
-            alwaysBounceVertical = true
-            textContainerInset = UIEdgeInsets(top: 64, left: 22, bottom: 96, right: 22)
-        } else {
-            isScrollEnabled = false
-            textContainerInset = .zero
-            clipsToBounds = true
-        }
     }
 
     @available(*, unavailable)
@@ -152,41 +145,56 @@ final class ReaderTextView: UITextView {
         fatalError("ReaderTextView is created in code")
     }
 
-    /// Character offset (UTF-16) of the first line at the top of the visible area.
-    func firstVisibleOffset() -> Int {
-        guard textStorage.length > 0 else { return 0 }
-        let y = contentOffset.y + adjustedContentInset.top - textContainerInset.top + 1
-        let point = CGPoint(x: 1, y: max(0, y))
-        let glyph = layoutManager.glyphIndex(for: point, in: textContainer)
-        return min(layoutManager.characterIndexForGlyph(at: glyph), textStorage.length)
-    }
-
     /// Character under a point, only if the point is really on a glyph (not in a margin).
     func characterIndex(at point: CGPoint) -> Int? {
         guard textStorage.length > 0 else { return nil }
-        let location = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
-        let glyph = layoutManager.glyphIndex(for: location, in: textContainer)
+        let glyph = layoutManager.glyphIndex(for: point, in: textContainer)
         let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
-        guard rect.insetBy(dx: -2, dy: -4).contains(location) else { return nil }
+        guard rect.insetBy(dx: -2, dy: -4).contains(point) else { return nil }
         return layoutManager.characterIndexForGlyph(at: glyph)
     }
 
-    func scroll(toUTF16 offset: Int, placement: NavigationRequest.Placement) {
-        layoutIfNeeded()
-        let length = textStorage.length
-        guard length > 0 else { return }
-        let target = max(0, min(offset, length - 1))
-        layoutManager.ensureLayout(for: textContainer)
-        let glyphs = layoutManager.glyphRange(forCharacterRange: NSRange(location: target, length: 1), actualCharacterRange: nil)
-        let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
-        let margin: CGFloat
-        switch placement {
-        case .top: margin = offset == 0 ? textContainerInset.top : 0
-        case .upperThird: margin = bounds.height * 0.3
-        }
-        let minY = -adjustedContentInset.top
-        let maxY = max(minY, contentSize.height - bounds.height + adjustedContentInset.bottom)
-        let y = rect.minY + textContainerInset.top - adjustedContentInset.top - margin
-        setContentOffset(CGPoint(x: contentOffset.x, y: min(max(y, minY), maxY)), animated: false)
+    /// First character of the line at `y` (clamped to the text).
+    func characterIndex(atY y: CGFloat) -> Int {
+        guard textStorage.length > 0 else { return 0 }
+        let glyph = layoutManager.glyphIndex(for: CGPoint(x: 1, y: max(0, y)), in: textContainer)
+        var lineRange = NSRange(location: 0, length: 0)
+        _ = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineRange)
+        return min(layoutManager.characterIndexForGlyph(at: lineRange.location), textStorage.length)
+    }
+}
+
+/// Measuring text the way a `ReaderTextView` of a given width lays it out.
+enum TextMeasure {
+    /// Keeps the text storage alive for as long as its layout manager is used.
+    struct Layout {
+        let storage: NSTextStorage
+        let layoutManager: NSLayoutManager
+        let container: NSTextContainer
+    }
+
+    static func height(of text: NSAttributedString, width: CGFloat) -> CGFloat {
+        let layout = layout(text, width: width)
+        return ceil(layout.layoutManager.usedRect(for: layout.container).height)
+    }
+
+    /// Top of the line that contains `offset`.
+    static func y(ofOffset offset: Int, in text: NSAttributedString, width: CGFloat) -> CGFloat {
+        guard text.length > 0 else { return 0 }
+        let layout = layout(text, width: width)
+        let character = max(0, min(offset, text.length - 1))
+        let glyph = layout.layoutManager.glyphIndexForCharacter(at: character)
+        return layout.layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
+    }
+
+    static func layout(_ text: NSAttributedString, width: CGFloat) -> Layout {
+        let storage = NSTextStorage(attributedString: text)
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layoutManager.addTextContainer(container)
+        layoutManager.ensureLayout(for: container)
+        return Layout(storage: storage, layoutManager: layoutManager, container: container)
     }
 }

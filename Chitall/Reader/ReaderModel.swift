@@ -205,6 +205,17 @@ final class ReaderModel {
         saveReadingPosition(chapter: chapter, atUTF16: firstOffset)
     }
 
+    /// Continuous mode: the reader scrolled; `save` once scrolling has settled.
+    func didScroll(chapter: Int, utf16Offset offset: Int, save: Bool) {
+        if chapter != chapterIndex { chapterIndex = chapter }
+        if pageStatus != nil { pageStatus = nil }
+        if save {
+            saveReadingPosition(chapter: chapter, atUTF16: offset)
+        } else {
+            lastPosition = (chapter, offset)
+        }
+    }
+
     func saveReadingPosition(chapter: Int, atUTF16 offset: Int) {
         lastPosition = (chapter, offset)
         guard let text = rendered(chapter: chapter)?.text, let service,

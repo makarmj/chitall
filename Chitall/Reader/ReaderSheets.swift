@@ -61,6 +61,51 @@ struct TableOfContentsView: View {
     }
 }
 
+/// Shown once in page mode: where to tap. Any tap closes it.
+struct PageZonesHint: View {
+    var onDismiss: () -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let edge = geometry.size.width * TextFragmentView.turnZoneFraction
+            ZStack {
+                Color.black.opacity(0.45)
+                HStack(spacing: 0) {
+                    zone("Назад", systemImage: "chevron.left").frame(width: edge)
+                    zone("Панели", systemImage: "rectangle.topthird.inset.filled").frame(maxWidth: .infinity)
+                    zone("Вперёд", systemImage: "chevron.right").frame(width: edge)
+                }
+                VStack {
+                    Spacer()
+                    Text("Свайп тоже листает. Долгое нажатие — выделить текст.\nНажмите, чтобы начать читать.")
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                        .padding(.bottom, geometry.safeAreaInsets.bottom + 40)
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onDismiss)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Закрыть подсказку")
+    }
+
+    private func zone(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: systemImage).font(.title2)
+            Text(title).font(Typography.serif(.headline))
+        }
+        .foregroundStyle(.white)
+        .frame(maxHeight: .infinity)
+        .overlay(alignment: .trailing) {
+            if title != "Вперёд" { Rectangle().fill(.white.opacity(0.35)).frame(width: 1) }
+        }
+    }
+}
+
 struct ReaderSettingsView: View {
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
     @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
@@ -80,8 +125,8 @@ struct ReaderSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 Text(modeRaw == ReadingMode.pages.rawValue
-                     ? "Тап по правому краю — вперёд, по левому — назад, по центру — панели."
-                     : "Глава листается прокруткой; следующая — кнопкой внизу.")
+                     ? "Тап по правой трети страницы — вперёд, по левой — назад, по центру — панели. Свайп тоже листает."
+                     : "Вся книга одной лентой: главы идут подряд. Тап по тексту — панели.")
                     .font(.caption)
                     .foregroundStyle(Palette.secondaryInk)
             }

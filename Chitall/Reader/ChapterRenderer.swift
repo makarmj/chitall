@@ -6,6 +6,7 @@ enum ReaderPreferences {
     static let lineSpacingKey = "reader.lineSpacing"
     static let lastColorKey = "reader.lastHighlightColor"
     static let modeKey = "reader.mode"
+    static let pageHintShownKey = "reader.pageHintShown"
 
     static let defaultFontSize: Double = 19
     static let fontSizeRange: ClosedRange<Double> = 14...30

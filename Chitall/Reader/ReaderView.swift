@@ -8,6 +8,7 @@ struct ReaderView: View {
     @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
     @AppStorage(ReaderPreferences.lastColorKey) private var lastColorRaw = HighlightColor.default.rawValue
     @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
+    @AppStorage(ReaderPreferences.pageHintShownKey) private var pageHintShown = false
 
     @Query private var highlights: [Highlight]
     @State private var model: ReaderModel
@@ -50,6 +51,25 @@ struct ReaderView: View {
         )
     }
 
+    /// Changes whenever something drawn on the text changes: a highlight's colour, thought or
+    /// place, or the current search result. Reading the properties here also lets SwiftUI
+    /// observe them.
+    private var decorationsToken: Int {
+        var hasher = Hasher()
+        for highlight in highlights {
+            hasher.combine(highlight.id)
+            hasher.combine(highlight.colorKey)
+            hasher.combine(highlight.note.isEmpty)
+            hasher.combine(highlight.locatorJSON)
+        }
+        if let hit = model.searchHighlight {
+            hasher.combine(hit.chapter)
+            hasher.combine(hit.range.location)
+            hasher.combine(hit.range.length)
+        }
+        return hasher.finalize()
+    }
+
     var body: some View {
         ZStack {
             Palette.background.ignoresSafeArea()
@@ -71,18 +91,15 @@ struct ReaderView: View {
                     )
                     .ignoresSafeArea()
                 case .scroll:
-                    if let rendered = model.rendered {
-                        BookTextView(
-                            content: rendered,
-                            decorations: model.decorations(for: highlights, chapter: rendered.chapterIndex),
-                            navigation: model.navigation,
-                            actions: textActions,
-                            onVisibleOffsetChange: { chapter, offset in
-                                model.saveReadingPosition(chapter: chapter, atUTF16: offset)
-                            }
-                        )
-                        .ignoresSafeArea(.container, edges: .bottom)
-                    }
+                    ContinuousBookView(
+                        model: model,
+                        styleKey: model.styleKey,
+                        highlights: highlights,
+                        decorationsToken: decorationsToken,
+                        navigation: model.navigation,
+                        actions: textActions
+                    )
+                    .ignoresSafeArea()
                 }
             }
         }
@@ -91,6 +108,12 @@ struct ReaderView: View {
         }
         .overlay(alignment: .bottom) {
             if model.chromeVisible, model.isReady { bottomBar.transition(.move(edge: .bottom).combined(with: .opacity)) }
+        }
+        .overlay {
+            if mode == .pages, model.isReady, !pageHintShown {
+                PageZonesHint { withAnimation { pageHintShown = true } }
+                    .transition(.opacity)
+            }
         }
         // In page mode the status bar stays: hiding it would change the page size and reflow the book.
         .statusBarHidden(mode == .scroll && !model.chromeVisible)

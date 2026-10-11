@@ -292,6 +292,62 @@ final class AppTests: XCTestCase {
         XCTAssertEqual(style.paragraphSpacingBefore, 0)
     }
 
+    // MARK: Continuous scroll
+
+    func testChunksCoverTheChapterAndHideTheTrailingParagraphBreak() throws {
+        let chapter = try renderedSampleChapters(fontSize: 24)[1]
+        let chunks = Paginator.paginate(chapter, pageSize: CGSize(width: 260, height: 500))
+        XCTAssertGreaterThan(chunks.count, 1)
+        let text = chapter.string as NSString
+        for range in chunks.ranges {
+            let content = Paginator.chunkContent(of: chapter, range: range)
+            let endsWithBreak = text.character(at: NSMaxRange(range) - 1) == 0x0A
+            XCTAssertEqual(content.length, range.length - (endsWithBreak && range.length > 1 ? 1 : 0))
+            XCTAssertFalse(content.string.hasSuffix("\n"))
+            if range.location > 0, text.character(at: range.location - 1) != 0x0A {
+                let style = try XCTUnwrap(content.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+                XCTAssertEqual(style.firstLineHeadIndent, style.headIndent, "a continued paragraph has no first-line indent")
+            }
+        }
+    }
+
+    func testContinuousScrollShowsNeighbourChaptersWithoutMovingTheReader() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.35), initialHighlight: nil)
+
+        let controller = ContinuousReaderController(model: model)
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        controller.view.layoutIfNeeded()
+
+        model.show(chapter: 2)
+        controller.update(styleKey: model.styleKey, highlights: [], decorationsToken: 0, navigation: model.navigation)
+        controller.view.layoutIfNeeded()
+
+        // The previous chapter was inserted above and the offset compensated: chapter 2 is still on top.
+        XCTAssertTrue(controller.loadedChapterIndices.contains(1))
+        XCTAssertTrue(controller.loadedChapterIndices.contains(2))
+        XCTAssertEqual(controller.loadedChapterIndices, controller.loadedChapterIndices.sorted())
+        let top = try XCTUnwrap(controller.visiblePosition)
+        XCTAssertEqual(top.chapter, 2)
+        XCTAssertEqual(top.offset, 0)
+
+        // Scrolling down keeps loading the following chapters, in order, up to the end of the book.
+        for _ in 0..<12 {
+            let table = controller.tableView
+            let bottom = max(0, table.contentSize.height - table.bounds.height)
+            table.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+            controller.view.layoutIfNeeded()
+        }
+        XCTAssertEqual(controller.loadedChapterIndices.last, model.chapters.count - 1)
+        let indices = controller.loadedChapterIndices
+        XCTAssertEqual(indices, Array((indices.first ?? 0)...(indices.last ?? 0)), "loaded chapters are contiguous")
+    }
+
     func testIllustrationTallerThanPageStillPaginates() throws {
         let text = NSMutableAttributedString(string: "До\n\u{FFFC}\nПосле", attributes: [.font: UIFont.systemFont(ofSize: 18)])
         let attachment = FittingImageAttachment()

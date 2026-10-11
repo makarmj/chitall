@@ -187,14 +187,32 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         reportCurrentPage()
     }
 
+    private var isTurning = false
+    /// Taps that arrive while a page is still sliding: +1 per "forward", −1 per "back".
+    private var queuedTurns = 0
+
     private func turn(forward: Bool) {
+        guard !isTurning else {
+            // Remember quick successive taps instead of dropping them.
+            queuedTurns = max(-3, min(3, queuedTurns + (forward ? 1 : -1)))
+            return
+        }
         guard let current = currentPage else { return }
         let target = forward ? location(after: current.location) : location(before: current.location)
-        guard let target, let page = makePage(target) else { return }
-        view.isUserInteractionEnabled = false
+        guard let target, let page = makePage(target) else {
+            queuedTurns = 0
+            return
+        }
+        isTurning = true
         pager.setViewControllers([page], direction: forward ? .forward : .reverse, animated: true) { [weak self] _ in
-            self?.view.isUserInteractionEnabled = true
-            self?.reportCurrentPage()
+            guard let self else { return }
+            self.isTurning = false
+            self.reportCurrentPage()
+            if self.queuedTurns != 0 {
+                let next = self.queuedTurns > 0
+                self.queuedTurns += next ? -1 : 1
+                self.turn(forward: next)
+            }
         }
     }
 
@@ -249,26 +267,29 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
     }
 }
 
-/// One page: its own small `UITextView` with just this page's characters, plus a quiet
-/// chapter title above and the page number below.
-final class PageViewController: UIViewController, UITextViewDelegate, UIGestureRecognizerDelegate {
+/// One page: a text fragment covering the whole page (so taps in the margins count), the
+/// page's own small `UITextView`, a quiet chapter title above and the page number below.
+final class PageViewController: UIViewController {
     let location: PageLocation
     /// The page's characters in chapter coordinates.
     let range: NSRange
     let pageCount: Int
-    var actions = ReaderTextActions()
-    var onTurn: (Bool) -> Void = { _ in }
-    var onSelectionChange: (Bool) -> Void = { _ in }
+    var actions = ReaderTextActions() {
+        didSet { fragment.actions = actions }
+    }
+    var onTurn: (Bool) -> Void = { _ in } {
+        didSet { fragment.onTurn = onTurn }
+    }
+    var onSelectionChange: (Bool) -> Void = { _ in } {
+        didSet { fragment.onSelectionChange = onSelectionChange }
+    }
 
-    private let textView = ReaderTextView(scrollable: false)
+    private let fragment = TextFragmentView()
     private let header = UILabel()
     private let footer = UILabel()
     private let content: NSAttributedString
     private let geometry: PageGeometry
     private var decorations: [HighlightDecoration] = []
-
-    /// Edge zones that turn pages; the middle toggles the reader controls.
-    static let turnZoneFraction: CGFloat = 0.28
 
     init(location: PageLocation, range: NSRange, pageCount: Int, chapterTitle: String, content: NSAttributedString, geometry: PageGeometry) {
         self.location = location
@@ -290,32 +311,32 @@ final class PageViewController: UIViewController, UITextViewDelegate, UIGestureR
         super.viewDidLoad()
         view.backgroundColor = Palette.backgroundUI
 
+        fragment.turnZones = true
+        fragment.actions = actions
+        fragment.onTurn = onTurn
+        fragment.onSelectionChange = onSelectionChange
+        fragment.configure(chapter: location.chapter, range: range, content: content, decorations: decorations)
+        fragment.textView.accessibilityHint = "Страница \(location.page + 1) из \(pageCount)"
+        view.addSubview(fragment)
+
         for label in [header, footer] {
             label.font = UIFont.systemFont(ofSize: 12)
             label.textColor = Palette.secondaryInkUI
             label.textAlignment = .center
             label.lineBreakMode = .byTruncatingTail
             label.isAccessibilityElement = false
-            view.addSubview(label)
+            label.isUserInteractionEnabled = false // taps on the title or page number still turn pages
+            fragment.addSubview(label)
         }
-
-        textView.attributedText = content
-        DecorationPainter.apply(decorations, to: textView.textStorage, chapterOffset: range.location)
-        textView.delegate = self
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        tap.delegate = self
-        textView.addGestureRecognizer(tap)
-        view.addSubview(textView)
-
-        textView.accessibilityHint = "Страница \(location.page + 1) из \(pageCount)"
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        fragment.frame = view.bounds
         // Exactly the frame the paginator measured; a couple of points of slack against rounding.
         var frame = geometry.textFrame
         frame.size.height += 2
-        textView.frame = frame
+        fragment.textFrame = frame
         header.frame = CGRect(x: frame.minX, y: frame.minY - PageGeometry.headerHeight, width: frame.width, height: PageGeometry.headerHeight - 6)
         footer.frame = CGRect(x: frame.minX, y: geometry.textFrame.maxY + 6, width: frame.width, height: PageGeometry.footerHeight - 6)
     }
@@ -323,72 +344,6 @@ final class PageViewController: UIViewController, UITextViewDelegate, UIGestureR
     func apply(decorations newDecorations: [HighlightDecoration]) {
         decorations = newDecorations
         guard isViewLoaded else { return }
-        DecorationPainter.apply(decorations, to: textView.textStorage, chapterOffset: range.location)
-    }
-
-    // MARK: Taps: edges turn pages, highlights open, the middle toggles controls
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended else { return }
-        guard textView.selectedRange.length == 0 else { return } // the tap only dismisses a selection
-        let local = textView.characterIndex(at: gesture.location(in: textView))
-        // A footnote link opens through the text view's own link action, wherever it is.
-        if let local, textView.textStorage.attribute(.link, at: local, effectiveRange: nil) != nil { return }
-
-        let pointInPage = gesture.location(in: view)
-        let zone = view.bounds.width * Self.turnZoneFraction
-        if pointInPage.x < zone { onTurn(false); return }
-        if pointInPage.x > view.bounds.width - zone { onTurn(true); return }
-
-        guard let local else {
-            actions.onTapText()
-            return
-        }
-        if let decoration = DecorationPainter.highlight(at: local + range.location, in: decorations) {
-            actions.onTapHighlight(decoration.id)
-        } else {
-            actions.onTapText()
-        }
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf other: UIGestureRecognizer) -> Bool {
-        guard let tap = other as? UITapGestureRecognizer else { return false }
-        return tap.numberOfTapsRequired > 1 && other.view === gestureRecognizer.view
-    }
-
-    // MARK: Selection, edit menu, links
-
-    func textViewDidChangeSelection(_ textView: UITextView) {
-        // While text is selected, a horizontal drag adjusts the selection instead of turning the page.
-        onSelectionChange(textView.selectedRange.length > 0)
-    }
-
-    func textView(_ textView: UITextView, editMenuForTextIn localRange: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
-        guard localRange.length > 0 else { return nil }
-        let selection = ChapterRange(
-            chapter: location.chapter,
-            range: NSRange(location: localRange.location + range.location, length: localRange.length)
-        )
-        return ReaderEditMenu.make(
-            for: selection,
-            decorations: decorations,
-            suggestedActions: suggestedActions,
-            perform: { [weak self] action in self?.actions.onSelectionAction(action) },
-            clearSelection: { [weak textView] in textView?.selectedRange = NSRange(location: localRange.location, length: 0) }
-        )
-    }
-
-    func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
-        ReaderLinks.primaryAction(for: textItem, defaultAction: defaultAction) { [weak self] url in
-            self?.actions.onTapLink(url)
-        }
-    }
-
-    func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
-        nil
+        fragment.apply(decorations: decorations)
     }
 }

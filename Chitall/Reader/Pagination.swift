@@ -84,6 +84,32 @@ enum Paginator {
     }
 }
 
+extension Paginator {
+    /// The characters of one chunk of the continuous scroll. Like a page, but spacing before a
+    /// paragraph is kept (the chunk border is invisible) and a trailing paragraph break is left
+    /// out so that it does not add an empty line before the next chunk.
+    static func chunkContent(of chapter: NSAttributedString, range: NSRange) -> NSAttributedString {
+        var visible = range
+        let chapterText = chapter.string as NSString
+        if visible.length > 1, chapterText.character(at: NSMaxRange(visible) - 1) == 0x0A {
+            visible.length -= 1
+        }
+        let chunk = NSMutableAttributedString(attributedString: chapter.attributedSubstring(from: visible))
+        guard chunk.length > 0, visible.location > 0, chapterText.character(at: visible.location - 1) != 0x0A else {
+            return chunk
+        }
+        let lineBreak = (chunk.string as NSString).range(of: "\n")
+        let firstParagraph = NSRange(location: 0, length: lineBreak.location == NSNotFound ? chunk.length : lineBreak.location + 1)
+        if let style = chunk.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle,
+           let adjusted = style.mutableCopy() as? NSMutableParagraphStyle {
+            adjusted.paragraphSpacingBefore = 0
+            adjusted.firstLineHeadIndent = adjusted.headIndent
+            chunk.addAttribute(.paragraphStyle, value: adjusted, range: firstParagraph)
+        }
+        return chunk
+    }
+}
+
 /// Where a page's text sits inside the screen. The paginator and the page view use the same
 /// numbers, so the text laid out on screen is exactly the text measured for the page.
 struct PageGeometry: Equatable {
