@@ -13,14 +13,15 @@
 4. `git pull --ff-only origin main`, затем `git stash pop`. Если в project.pbxproj конфликт — возьми версию из GitHub и заново впиши в неё прежние локальные значения DEVELOPMENT_TEAM и PRODUCT_BUNDLE_IDENTIFIER у таргетов Chitall и ChitallTests. Bundle Identifier приложения не меняй: с новым идентификатором iPhone поставит отдельное приложение, и книги с выделениями останутся в старом.
 5. Покажи `git log -1 --oneline` после обновления.
 6. Проверь `xcodebuild -version` и найди iPhone: `xcrun devicectl list devices`. Возьми его Identifier из этого списка (он нужен для devicectl).
-7. Собери для устройств:
-   xcodebuild -project Chitall.xcodeproj -scheme Chitall -configuration Debug -destination "generic/platform=iOS" -derivedDataPath build/DerivedData -allowProvisioningUpdates build
-8. Установи и запусти:
-   xcrun devicectl device install app --device <ID iPhone> build/DerivedData/Build/Products/Debug-iphoneos/Chitall.app
+7. Сними служебные расширенные атрибуты с файлов проекта (содержимое файлов не меняется): `xattr -cr .` в корне репозитория. Если в репозитории осталась папка `build/` от прошлых сборок — удали её: там только результаты сборки.
+8. Собери для устройств. Папка сборки должна быть ВНЕ ~/Documents и ~/Desktop: если они синхронизируются с iCloud, macOS добавляет файлам атрибуты, и подпись падает с «resource fork, Finder information, or similar detritus not allowed».
+   xcodebuild -project Chitall.xcodeproj -scheme Chitall -configuration Debug -destination "generic/platform=iOS" -derivedDataPath "$HOME/Library/Developer/Xcode/DerivedData/Chitall-CLI" -allowProvisioningUpdates build
+9. Установи и запусти:
+   xcrun devicectl device install app --device <ID iPhone> "$HOME/Library/Developer/Xcode/DerivedData/Chitall-CLI/Build/Products/Debug-iphoneos/Chitall.app"
    xcrun devicectl device process launch --device <ID iPhone> <Bundle Identifier приложения>
    Приложение с телефона не удаляй: вместе с ним удалятся книги и выделения. Установка идёт поверх.
-9. Если на любом шаге ошибка — не пытайся чинить исходный код. Пришли полный текст ошибки. Типичные случаи: телефон заблокирован (попроси разблокировать), «Untrusted Developer» (Настройки → Основные → VPN и управление устройством → Доверять), не выбрана команда подписи (Xcode → Settings → Accounts).
-10. В конце коротко отчитайся: какой коммит установлен, прошла ли сборка, установлено ли приложение.
+10. Если на любом шаге ошибка — не пытайся чинить исходный код. Пришли полный текст ошибки. Типичные случаи: телефон заблокирован (попроси разблокировать), «Untrusted Developer» (Настройки → Основные → VPN и управление устройством → Доверять), не выбрана команда подписи (Xcode → Settings → Accounts). Если подпись снова падает с «detritus» — пришли вывод `xattr -lr "$HOME/Library/Developer/Xcode/DerivedData/Chitall-CLI/Build/Products/Debug-iphoneos/Chitall.app" | head -40`.
+11. В конце коротко отчитайся: какой коммит установлен, прошла ли сборка, установлено ли приложение.
 ```
 
 Если что-то не получилось, пришлите отчёт Codex в чат проекта — по тексту ошибки будет видно, что поправить.
