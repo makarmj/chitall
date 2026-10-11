@@ -7,6 +7,7 @@ struct ReaderView: View {
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
     @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
     @AppStorage(ReaderPreferences.lastColorKey) private var lastColorRaw = HighlightColor.default.rawValue
+    @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
 
     @Query private var highlights: [Highlight]
     @State private var model: ReaderModel
@@ -15,6 +16,7 @@ struct ReaderView: View {
     @State private var shownNote: NoteContent?
     @State private var showsContents = false
     @State private var showsSettings = false
+    @State private var showsSearch = false
 
     private let initialHighlightID: UUID?
 
@@ -32,6 +34,22 @@ struct ReaderView: View {
         ReaderStyle(fontSize: CGFloat(fontSize), lineSpacing: CGFloat(lineSpacing))
     }
 
+    private var mode: ReadingMode {
+        ReadingMode(rawValue: modeRaw) ?? .pages
+    }
+
+    private var textActions: ReaderTextActions {
+        ReaderTextActions(
+            onSelectionAction: handle,
+            onTapHighlight: { id in editingHighlight = highlights.first { $0.id == id } },
+            onTapLink: openLink,
+            onTapText: {
+                model.clearSearchHighlight()
+                withAnimation(.easeInOut(duration: 0.2)) { model.chromeVisible.toggle() }
+            }
+        )
+    }
+
     var body: some View {
         ZStack {
             Palette.background.ignoresSafeArea()
@@ -42,19 +60,29 @@ struct ReaderView: View {
             case let .failed(message):
                 failure(message)
             case .ready:
-                if let rendered = model.rendered {
-                    BookTextView(
-                        content: rendered,
-                        decorations: model.decorations(for: highlights),
-                        scrollRequest: model.scrollRequest,
-                        findRequest: model.findRequest,
-                        onSelectionAction: handle,
-                        onTapHighlight: { id in editingHighlight = highlights.first { $0.id == id } },
-                        onTapLink: openLink,
-                        onTapText: { withAnimation(.easeInOut(duration: 0.2)) { model.chromeVisible.toggle() } },
-                        onVisibleOffsetChange: { model.saveReadingPosition(atUTF16: $0) }
+                switch mode {
+                case .pages:
+                    PagedBookView(
+                        model: model,
+                        styleKey: model.styleKey,
+                        decorations: model.decorationsAroundCurrentChapter(for: highlights),
+                        navigation: model.navigation,
+                        actions: textActions
                     )
-                    .ignoresSafeArea(edges: .bottom)
+                    .ignoresSafeArea()
+                case .scroll:
+                    if let rendered = model.rendered {
+                        BookTextView(
+                            content: rendered,
+                            decorations: model.decorations(for: highlights, chapter: rendered.chapterIndex),
+                            navigation: model.navigation,
+                            actions: textActions,
+                            onVisibleOffsetChange: { chapter, offset in
+                                model.saveReadingPosition(chapter: chapter, atUTF16: offset)
+                            }
+                        )
+                        .ignoresSafeArea(.container, edges: .bottom)
+                    }
                 }
             }
         }
@@ -64,13 +92,15 @@ struct ReaderView: View {
         .overlay(alignment: .bottom) {
             if model.chromeVisible, model.isReady { bottomBar.transition(.move(edge: .bottom).combined(with: .opacity)) }
         }
-        .statusBarHidden(!model.chromeVisible)
+        // In page mode the status bar stays: hiding it would change the page size and reflow the book.
+        .statusBarHidden(mode == .scroll && !model.chromeVisible)
         .task {
             let initial = initialHighlightID.flatMap { id in highlights.first { $0.id == id } }
             await model.load(style: style, initialHighlight: initial)
         }
         .onChange(of: fontSize) { model.restyle(style) }
         .onChange(of: lineSpacing) { model.restyle(style) }
+        .onChange(of: modeRaw) { model.navigateToCurrentPosition() }
         .onDisappear { try? context.save() }
         .sheet(item: $editingHighlight, onDismiss: deletePendingHighlight) { highlight in
             HighlightEditorSheet(highlight: highlight, onDelete: {
@@ -81,6 +111,12 @@ struct ReaderView: View {
         .sheet(item: $shownNote) { note in
             NoteSheet(note: note)
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showsSearch) {
+            BookSearchSheet(model: model) { hit in
+                model.go(to: hit)
+                showsSearch = false
+            }
         }
         .sheet(isPresented: $showsContents) {
             TableOfContentsView(
@@ -98,7 +134,7 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $showsSettings) {
             ReaderSettingsView()
-                .presentationDetents([.height(360)])
+                .presentationDetents([.height(430)])
         }
     }
 
@@ -127,10 +163,10 @@ struct ReaderView: View {
             }
             .frame(maxWidth: .infinity)
 
-            Button { model.findRequest = UUID() } label: {
+            Button { showsSearch = true } label: {
                 Image(systemName: "magnifyingglass").frame(width: 32, height: 36)
             }
-            .accessibilityLabel("Найти в главе")
+            .accessibilityLabel("Поиск по книге")
             .disabled(!model.isReady)
 
             Button { showsContents = true } label: {
@@ -142,7 +178,7 @@ struct ReaderView: View {
             Button { showsSettings = true } label: {
                 Image(systemName: "textformat.size").frame(width: 32, height: 36)
             }
-            .accessibilityLabel("Оформление текста")
+            .accessibilityLabel("Оформление и режим чтения")
         }
         .foregroundStyle(Palette.ink)
         .padding(.horizontal, 12)
@@ -181,7 +217,13 @@ struct ReaderView: View {
 
     private var progressText: String {
         let percent = Int((model.storedBook.readingProgress * 100).rounded())
-        return "Глава \(model.chapterIndex + 1) из \(model.chapters.count) · \(percent) %"
+        let chapter = "гл. \(model.chapterIndex + 1) из \(model.chapters.count)"
+        if mode == .pages, let status = model.pageStatus {
+            let left = status.pageCount - status.page - 1
+            let rest = left > 0 ? "ещё \(left) стр. в главе" : "последняя стр. главы"
+            return "\(chapter) · \(rest) · \(percent) %"
+        }
+        return "\(chapter) · \(percent) %"
     }
 
     private func failure(_ message: String) -> some View {
@@ -203,12 +245,12 @@ struct ReaderView: View {
 
     private func handle(_ action: SelectionAction) {
         switch action {
-        case let .highlight(range, color):
+        case let .highlight(selection, color):
             lastColorRaw = color.rawValue
-            _ = model.createHighlight(for: range, color: color, context: context)
-        case let .highlightWithThought(range):
+            _ = model.createHighlight(for: selection, color: color, context: context)
+        case let .highlightWithThought(selection):
             let color = HighlightColor(storedValue: lastColorRaw)
-            editingHighlight = model.createHighlight(for: range, color: color, context: context)
+            editingHighlight = model.createHighlight(for: selection, color: color, context: context)
         case let .open(id):
             editingHighlight = highlights.first { $0.id == id }
         }

@@ -2,28 +2,51 @@ import Foundation
 import Observation
 import SwiftData
 
-struct ScrollRequest: Equatable {
+/// "Show this place": a chapter and a display offset inside it. Both reading modes consume it.
+struct NavigationRequest: Equatable {
     enum Placement: Equatable {
-        /// The offset becomes the first visible line (reading position, chapter start).
+        /// The offset becomes the first visible line / is on the shown page (reading position).
         case top
-        /// The offset lands in the upper third (a highlight opened from Materials).
+        /// The offset lands in the upper third (a highlight or a search result).
         case upperThird
     }
 
     let id = UUID()
+    let chapter: Int
     let utf16Offset: Int
     let placement: Placement
 }
 
 struct HighlightDecoration: Equatable {
+    enum Kind: Equatable {
+        case highlight
+        case searchHit
+    }
+
     let id: UUID
+    /// Display range in chapter coordinates (UTF-16).
     let range: NSRange
     let color: HighlightColor
     let hasNote: Bool
+    var kind: Kind = .highlight
+}
+
+enum ReadingMode: String, CaseIterable, Identifiable {
+    case pages
+    case scroll
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pages: return "Страницы"
+        case .scroll: return "Прокрутка"
+        }
+    }
 }
 
 /// State of an open book: the parsed model, the current chapter and the bridge between
-/// display ranges, block positions and stored locators.
+/// display ranges, block positions and stored locators. Shared by both reading modes.
 @MainActor
 @Observable
 final class ReaderModel {
@@ -33,19 +56,29 @@ final class ReaderModel {
         case failed(String)
     }
 
+    struct PageStatus: Equatable {
+        let page: Int
+        let pageCount: Int
+    }
+
     let storedBook: StoredBook
     private(set) var phase: Phase = .loading
     private(set) var book: ReadableBook?
     private(set) var chapterIndex = 0
-    private(set) var rendered: RenderedChapter?
-    var scrollRequest: ScrollRequest?
-    var findRequest: UUID?
+    private(set) var styleKey = ""
+    private(set) var navigation: NavigationRequest?
+    private(set) var pageStatus: PageStatus?
+    private(set) var searchHighlight: ChapterRange?
     var chromeVisible = true
+    /// The query of the search sheet, kept while the book is open.
+    @ObservationIgnored var lastSearchQuery = ""
 
     private let files: BookFileStore
     @ObservationIgnored private var service: LocatorService?
     @ObservationIgnored private var style = ReaderStyle(fontSize: 19, lineSpacing: 1.35)
+    @ObservationIgnored private var renderCache: [Int: RenderedChapter] = [:]
     @ObservationIgnored private var resolutions: [UUID: (json: String, result: LocatorResolution)] = [:]
+    @ObservationIgnored private var lastPosition: (chapter: Int, utf16: Int)?
 
     init(book: StoredBook, files: BookFileStore) {
         self.storedBook = book
@@ -61,11 +94,18 @@ final class ReaderModel {
         return book.chapters[chapterIndex]
     }
 
+    /// The current chapter, rendered in the current typography (scroll mode shows this).
+    var rendered: RenderedChapter? {
+        _ = styleKey // re-render dependants when the typography changes
+        return rendered(chapter: chapterIndex)
+    }
+
     // MARK: Loading
 
     func load(style: ReaderStyle, initialHighlight: Highlight?) async {
         guard book == nil else { return }
         self.style = style
+        styleKey = style.key
         let fileName = storedBook.fileName
         let fingerprint = storedBook.fingerprint
         let files = self.files
@@ -101,20 +141,33 @@ final class ReaderModel {
         return nil
     }
 
-    // MARK: Chapters
+    // MARK: Chapters and typography
 
-    func show(chapter index: Int, at position: BlockPosition? = nil, placement: ScrollRequest.Placement = .top) {
-        guard let book, book.chapters.indices.contains(index) else { return }
-        chapterIndex = index
+    /// A chapter rendered in the current typography; cached, at most a few chapters at a time.
+    func rendered(chapter index: Int) -> RenderedChapter? {
+        guard let book, book.chapters.indices.contains(index) else { return nil }
+        if let cached = renderCache[index], cached.styleKey == style.key { return cached }
         let text = ChapterText(chapter: book.chapters[index])
-        rendered = RenderedChapter(
+        let rendered = RenderedChapter(
             chapterIndex: index,
             styleKey: style.key,
             attributed: ChapterRenderer.render(text, book: book, style: style),
             text: text
         )
+        if renderCache.count >= 6 {
+            let farthest = renderCache.keys.max { abs($0 - chapterIndex) < abs($1 - chapterIndex) }
+            if let farthest { renderCache[farthest] = nil }
+        }
+        renderCache[index] = rendered
+        return rendered
+    }
+
+    func show(chapter index: Int, at position: BlockPosition? = nil, placement: NavigationRequest.Placement = .top) {
+        guard let text = rendered(chapter: index)?.text else { return }
+        chapterIndex = index
         let offset = position.flatMap { text.utf16Offset(of: $0) } ?? 0
-        scrollRequest = ScrollRequest(utf16Offset: offset, placement: placement)
+        navigation = NavigationRequest(chapter: index, utf16Offset: offset, placement: placement)
+        lastPosition = (index, offset)
     }
 
     func showNextChapter() { show(chapter: chapterIndex + 1) }
@@ -128,17 +181,39 @@ final class ReaderModel {
         show(chapter: chapter, at: BlockPosition(block: ordinal, offset: 0), placement: .top)
     }
 
-    /// Re-renders the current chapter in a new typography; the text view keeps its position.
+    /// Asks the active reading mode to show the last known position (after a mode switch).
+    func navigateToCurrentPosition() {
+        guard let position = lastPosition else { return }
+        navigation = NavigationRequest(chapter: position.chapter, utf16Offset: position.utf16, placement: .top)
+    }
+
+    /// New typography: cached chapters are re-rendered on demand; views keep their place.
     func restyle(_ newStyle: ReaderStyle) {
         guard newStyle != style else { return }
         style = newStyle
-        guard let book, let rendered else { return }
-        self.rendered = RenderedChapter(
-            chapterIndex: rendered.chapterIndex,
-            styleKey: newStyle.key,
-            attributed: ChapterRenderer.render(rendered.text, book: book, style: newStyle),
-            text: rendered.text
-        )
+        renderCache = [:]
+        styleKey = newStyle.key
+    }
+
+    // MARK: Position reports from the views
+
+    /// Page mode: the user turned to another page (possibly in another chapter).
+    func didShowPage(chapter: Int, page: Int, pageCount: Int, firstOffset: Int) {
+        if chapter != chapterIndex { chapterIndex = chapter }
+        let status = PageStatus(page: page, pageCount: pageCount)
+        if pageStatus != status { pageStatus = status }
+        saveReadingPosition(chapter: chapter, atUTF16: firstOffset)
+    }
+
+    func saveReadingPosition(chapter: Int, atUTF16 offset: Int) {
+        lastPosition = (chapter, offset)
+        guard let text = rendered(chapter: chapter)?.text, let service,
+              let position = text.position(atUTF16: offset, forward: true),
+              let locator = service.locator(at: position),
+              let json = try? locator.jsonString() else { return }
+        storedBook.readingPositionJSON = json
+        storedBook.readingProgress = locator.progression
+        storedBook.lastOpenedAt = .now
     }
 
     // MARK: Links
@@ -155,6 +230,26 @@ final class ReaderModel {
         return nil
     }
 
+    // MARK: Search
+
+    func search(_ query: String) async -> BookSearch.Result? {
+        guard let book else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            BookSearch.search(query, in: book)
+        }.value
+    }
+
+    func go(to hit: BookSearch.Hit) {
+        guard let text = rendered(chapter: hit.chapterIndex)?.text,
+              let display = text.utf16Range(of: hit.range) else { return }
+        searchHighlight = ChapterRange(chapter: hit.chapterIndex, range: NSRange(location: display.lowerBound, length: display.count))
+        show(chapter: hit.chapterIndex, at: hit.range.start, placement: .upperThird)
+    }
+
+    func clearSearchHighlight() {
+        if searchHighlight != nil { searchHighlight = nil }
+    }
+
     // MARK: Highlights
 
     func resolve(_ highlight: Highlight) -> LocatorResolution? {
@@ -165,10 +260,11 @@ final class ReaderModel {
         return result
     }
 
-    func decorations(for highlights: [Highlight]) -> [HighlightDecoration] {
-        guard let rendered else { return [] }
-        return highlights.compactMap { highlight in
-            guard let range = resolve(highlight)?.range, let display = rendered.text.utf16Range(of: range) else { return nil }
+    /// Decorations of one chapter: the user's highlights plus the current search result.
+    func decorations(for highlights: [Highlight], chapter: Int) -> [HighlightDecoration] {
+        guard let text = rendered(chapter: chapter)?.text else { return [] }
+        var result = highlights.compactMap { highlight -> HighlightDecoration? in
+            guard let range = resolve(highlight)?.range, let display = text.utf16Range(of: range) else { return nil }
             return HighlightDecoration(
                 id: highlight.id,
                 range: NSRange(location: display.lowerBound, length: display.count),
@@ -176,6 +272,19 @@ final class ReaderModel {
                 hasNote: !highlight.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             )
         }
+        if let hit = searchHighlight, hit.chapter == chapter {
+            result.append(HighlightDecoration(id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!, range: hit.range, color: .azure, hasNote: false, kind: .searchHit))
+        }
+        return result
+    }
+
+    /// Decorations for the current chapter and its neighbours (page mode turns across chapters).
+    func decorationsAroundCurrentChapter(for highlights: [Highlight]) -> [Int: [HighlightDecoration]] {
+        var result: [Int: [HighlightDecoration]] = [:]
+        for index in (chapterIndex - 1)...(chapterIndex + 1) where chapters.indices.contains(index) {
+            result[index] = decorations(for: highlights, chapter: index)
+        }
+        return result
     }
 
     func unresolvedCount(in highlights: [Highlight]) -> Int {
@@ -183,9 +292,9 @@ final class ReaderModel {
     }
 
     /// Creates a highlight for a display selection. Returns `nil` if it contains no text.
-    func createHighlight(for selection: NSRange, color: HighlightColor, context: ModelContext) -> Highlight? {
-        guard let rendered, let service, let book else { return nil }
-        let display = selection.location..<(selection.location + selection.length)
+    func createHighlight(for selection: ChapterRange, color: HighlightColor, context: ModelContext) -> Highlight? {
+        guard let rendered = rendered(chapter: selection.chapter), let service, let book else { return nil }
+        let display = selection.range.location..<(selection.range.location + selection.range.length)
         guard let range = rendered.text.blockRange(forUTF16: display),
               let locator = service.locator(for: range),
               let json = try? locator.jsonString() else { return nil }
@@ -205,17 +314,5 @@ final class ReaderModel {
         try? context.save()
         resolutions[highlight.id] = (json, .exact(range))
         return highlight
-    }
-
-    // MARK: Reading position
-
-    func saveReadingPosition(atUTF16 offset: Int) {
-        guard let rendered, let service,
-              let position = rendered.text.position(atUTF16: offset, forward: true),
-              let locator = service.locator(at: position),
-              let json = try? locator.jsonString() else { return }
-        storedBook.readingPositionJSON = json
-        storedBook.readingProgress = locator.progression
-        storedBook.lastOpenedAt = .now
     }
 }

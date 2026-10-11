@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage(ReaderPreferences.themeKey) private var themeRaw = AppTheme.system.rawValue
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
     @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
+    @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
     @Query private var books: [StoredBook]
     @Query private var highlights: [Highlight]
     @Query private var tags: [TagRecord]
@@ -15,6 +16,11 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Оформление") {
+                    Picker("Режим чтения", selection: $modeRaw) {
+                        ForEach(ReadingMode.allCases) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
                     Picker("Тема", selection: $themeRaw) {
                         ForEach(AppTheme.allCases) { theme in
                             Text(theme.title).tag(theme.rawValue)

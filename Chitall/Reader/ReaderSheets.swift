@@ -65,11 +65,26 @@ struct ReaderSettingsView: View {
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
     @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
     @AppStorage(ReaderPreferences.themeKey) private var themeRaw = AppTheme.system.rawValue
+    @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Оформление")
                 .font(Typography.serif(.title3, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Режим чтения", selection: $modeRaw) {
+                    ForEach(ReadingMode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(modeRaw == ReadingMode.pages.rawValue
+                     ? "Тап по правому краю — вперёд, по левому — назад, по центру — панели."
+                     : "Глава листается прокруткой; следующая — кнопкой внизу.")
+                    .font(.caption)
+                    .foregroundStyle(Palette.secondaryInk)
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Размер шрифта: \(Int(fontSize))")

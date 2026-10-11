@@ -10,6 +10,10 @@ enum Palette {
     static let secondaryInkUI = dynamic(light: 0x6F655A, dark: 0xA8998A)
     static let accentUI = dynamic(light: 0x8A5A2C, dark: 0xD3A46B)
     static let dividerUI = dynamic(light: 0xE2D8C6, dark: 0x3A3027)
+    /// Temporary mark of the search result the reader jumped to.
+    static let searchHitUI = UIColor { traits in
+        accentUI.resolvedColor(with: traits).withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.38 : 0.26)
+    }
 
     static let background = Color(uiColor: backgroundUI)
     static let surface = Color(uiColor: surfaceUI)

@@ -5,6 +5,7 @@ enum ReaderPreferences {
     static let fontSizeKey = "reader.fontSize"
     static let lineSpacingKey = "reader.lineSpacing"
     static let lastColorKey = "reader.lastHighlightColor"
+    static let modeKey = "reader.mode"
 
     static let defaultFontSize: Double = 19
     static let fontSizeRange: ClosedRange<Double> = 14...30
@@ -213,8 +214,11 @@ private struct BlockLook {
     }
 }
 
-/// Scales embedded illustrations down to the text width.
+/// Scales embedded illustrations down to the text width and, in page mode, to the page height
+/// (an image taller than a page could never be placed on one).
 final class FittingImageAttachment: NSTextAttachment {
+    var maxHeight: CGFloat = .greatestFiniteMagnitude
+
     override func attachmentBounds(
         for textContainer: NSTextContainer?,
         proposedLineFragment lineFrag: CGRect,
@@ -223,7 +227,15 @@ final class FittingImageAttachment: NSTextAttachment {
     ) -> CGRect {
         guard let image, image.size.width > 0, image.size.height > 0 else { return .zero }
         let maxWidth = max(1, lineFrag.width - 4)
-        let scale = min(1, maxWidth / image.size.width)
+        let scale = min(1, maxWidth / image.size.width, maxHeight / image.size.height)
         return CGRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale)
+    }
+
+    /// Caps every illustration in `text` to a fraction of the page height.
+    static func limit(in text: NSAttributedString, toHeight pageHeight: CGFloat) {
+        let cap = max(40, pageHeight * 0.85)
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            (value as? FittingImageAttachment)?.maxHeight = cap
+        }
     }
 }
