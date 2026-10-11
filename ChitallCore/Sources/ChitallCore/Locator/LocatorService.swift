@@ -111,20 +111,7 @@ public struct LocatorService: Sendable {
     }
 
     private func caretByProgression(_ progression: Double) -> LocatorResolution {
-        let target = Int((progression * Double(book.totalTextLength)).rounded(.down))
-        var cursor = 0
-        var last: Block?
-        for chapter in book.chapters {
-            for block in chapter.blocks where block.hasText {
-                if cursor + block.length >= target {
-                    return .caret(BlockPosition(block: block.ordinal, offset: max(0, target - cursor)))
-                }
-                cursor += block.length + 1
-                last = block
-            }
-        }
-        if let last { return .caret(BlockPosition(block: last.ordinal, offset: last.length)) }
-        return .notFound
+        book.position(atProgression: progression).map(LocatorResolution.caret) ?? .notFound
     }
 
     private func point(_ block: Block, _ offset: Int) -> Locator.Point {

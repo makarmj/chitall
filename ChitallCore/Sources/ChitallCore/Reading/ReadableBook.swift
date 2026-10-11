@@ -307,6 +307,27 @@ public struct ReadableBook: Sendable {
         return 1
     }
 
+    /// The position at a 0…1 share of the whole book text (the inverse of `progression(of:)`),
+    /// used by the progress slider and as a fallback for a lost reading position.
+    public func position(atProgression progression: Double) -> BlockPosition? {
+        guard totalTextLength > 0 else {
+            return chapters.first?.blocks.first.map { BlockPosition(block: $0.ordinal, offset: 0) }
+        }
+        // Nearest, not floor: progression × length lands a hair below a block start in floating point.
+        let target = Int((max(0, min(1, progression)) * Double(totalTextLength)).rounded())
+        var last: Block?
+        for chapter in chapters {
+            for block in chapter.blocks where block.hasText {
+                guard let start = textStarts[block.ordinal] else { continue }
+                if target <= start + block.length {
+                    return BlockPosition(block: block.ordinal, offset: max(0, target - start))
+                }
+                last = block
+            }
+        }
+        return last.map { BlockPosition(block: $0.ordinal, offset: $0.length) }
+    }
+
     /// Text between two positions; blocks are joined with "\n". Non-text blocks contribute nothing.
     public func text(in range: BlockRange) -> String {
         guard range.start < range.end else { return "" }

@@ -148,6 +148,19 @@ final class LocatorTests: XCTestCase {
         XCTAssertEqual(book.progression(of: BlockPosition(block: 0, offset: 0)), 0)
     }
 
+    func testPositionAtProgressionInvertsProgression() throws {
+        XCTAssertEqual(book.position(atProgression: 0), BlockPosition(block: 0, offset: 0))
+        for block in book.allBlocks where block.hasText {
+            for offset in [0, block.length / 2] {
+                let position = BlockPosition(block: block.ordinal, offset: offset)
+                XCTAssertEqual(book.position(atProgression: book.progression(of: position)), position)
+            }
+        }
+        let end = try XCTUnwrap(book.position(atProgression: 1))
+        XCTAssertEqual(end.block, book.allBlocks.last(where: \.hasText)?.ordinal)
+        XCTAssertEqual(book.position(atProgression: 7), end, "values outside 0…1 are clamped")
+    }
+
     func testOffsetsAreUnicodeScalars() throws {
         let astral = try parse(fb2(body: "<section><p>А𝔄Б🧂В</p></section>"))
         let text = ChapterText(chapter: astral.chapters[0])
