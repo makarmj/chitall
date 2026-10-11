@@ -1,0 +1,116 @@
+import SwiftData
+import SwiftUI
+
+struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppCoordinator.self) private var coordinator
+    @AppStorage(ReaderPreferences.themeKey) private var themeRaw = AppTheme.system.rawValue
+    @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
+    @AppStorage(ReaderPreferences.lineSpacingKey) private var lineSpacing = ReaderPreferences.defaultLineSpacing
+    @Query private var books: [StoredBook]
+    @Query private var highlights: [Highlight]
+    @Query private var tags: [TagRecord]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Оформление") {
+                    Picker("Тема", selection: $themeRaw) {
+                        ForEach(AppTheme.allCases) { theme in
+                            Text(theme.title).tag(theme.rawValue)
+                        }
+                    }
+                    Stepper(value: $fontSize, in: ReaderPreferences.fontSizeRange, step: 1) {
+                        Text("Размер шрифта: \(Int(fontSize))")
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Межстрочный интервал: \(lineSpacing, specifier: "%.2f")")
+                        Slider(value: $lineSpacing, in: ReaderPreferences.lineSpacingRange, step: 0.05)
+                    }
+                }
+
+                Section("Теги") {
+                    NavigationLink {
+                        TagListView()
+                    } label: {
+                        LabeledContent("Список тегов", value: "\(tags.count)")
+                    }
+                }
+
+                Section {
+                    LabeledContent("Книги", value: "\(books.count)")
+                    LabeledContent("Выделения", value: "\(highlights.count)")
+                    LabeledContent("Файлы книг", value: ByteCountFormatter.string(fromByteCount: Int64(coordinator.files.usedBytes()), countStyle: .file))
+                } header: {
+                    Text("Данные")
+                } footer: {
+                    Text("Книги, выделения и заметки хранятся только на этом устройстве. Нет аккаунта, сети и аналитики. Импортируйте только свои DRM-free файлы.")
+                }
+
+                Section("О приложении") {
+                    LabeledContent("Версия", value: MaterialExportWriter.generator)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Palette.background)
+            .navigationTitle("Настройки")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Готово") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct TagListView: View {
+    @Environment(\.modelContext) private var context
+    @Query(sort: [SortDescriptor(\TagRecord.sortOrder), SortDescriptor(\TagRecord.name)]) private var tags: [TagRecord]
+    @State private var newTag = ""
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    TextField("Новый тег", text: $newTag)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit(add)
+                    Button("Добавить", action: add)
+                        .disabled(TagNames.parseList(newTag).isEmpty)
+                }
+            }
+            Section {
+                ForEach(tags) { tag in
+                    HStack {
+                        Text(TagNames.display(tag.name))
+                        Spacer()
+                        if tag.isBuiltIn {
+                            Text("встроенный")
+                                .font(.caption)
+                                .foregroundStyle(Palette.secondaryInk)
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    for index in offsets { context.delete(tags[index]) }
+                    try? context.save()
+                }
+            } footer: {
+                Text("Удаление тега из списка не снимает его с уже отмеченных выделений.")
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Palette.background)
+        .navigationTitle("Теги")
+    }
+
+    private func add() {
+        for name in TagNames.parseList(newTag) {
+            TagCatalog.ensure(name, in: context)
+        }
+        try? context.save()
+        newTag = ""
+    }
+}

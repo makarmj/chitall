@@ -1,0 +1,6 @@
+# Test fixtures are byte-exact: their SHA-256 is asserted in tests.
+*.fb2 binary
+*.zip binary
+*.pbxproj text eol=lf
+*.swift text eol=lf
+*.md text eol=lf

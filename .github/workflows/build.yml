@@ -1,0 +1,58 @@
+# Builds and tests Chitall on a GitHub-hosted Mac: the first real compilation of the iOS app
+# for a project that is developed on Windows. No signing is needed for the simulator.
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Core tests on macOS (CryptoKit and Compression paths)
+        run: swift test --package-path ChitallCore
+
+      - name: Static project checks
+        run: python3 -I tools/check_project.py
+
+      - name: Build and test the app on an iOS simulator
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          runtimes = sorted((k for k in devices if "iOS" in k), reverse=True)
+          print(next(d["udid"] for k in runtimes for d in devices[k] if d["name"].startswith("iPhone")))
+          ')
+          echo "Simulator: $UDID"
+          xcodebuild test \
+            -project Chitall.xcodeproj \
+            -scheme Chitall \
+            -destination "id=$UDID" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee xcodebuild.log
+
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            xcodebuild.log
+            TestResults.xcresult
+          if-no-files-found: ignore
