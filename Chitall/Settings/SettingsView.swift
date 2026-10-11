@@ -60,6 +60,14 @@ struct SettingsView: View {
 
                 Section("О приложении") {
                     LabeledContent("Версия", value: MaterialExportWriter.generator)
+                    NavigationLink("Шрифт Source Serif 4") {
+                        LicenseTextView(
+                            title: "Source Serif 4",
+                            text: Bundle.main.url(forResource: "SourceSerif4-OFL", withExtension: "txt")
+                                .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+                                ?? "© Adobe. SIL Open Font License 1.1."
+                        )
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -72,6 +80,24 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+}
+
+/// Text of a bundled licence (fonts are distributed under the SIL Open Font License).
+struct LicenseTextView: View {
+    let title: String
+    let text: String
+
+    var body: some View {
+        ScrollView {
+            Text(text)
+                .font(.footnote.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

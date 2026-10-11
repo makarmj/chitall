@@ -257,7 +257,7 @@ struct PageZonesHint: View {
 struct ReaderSettingsView: View {
     @Binding var brightness: Double?
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
-    @AppStorage(ReaderPreferences.fontKey) private var fontRaw = ReaderFont.newYork.rawValue
+    @AppStorage(ReaderPreferences.fontKey) private var fontRaw = ReaderFont.sourceSerif.rawValue
     @AppStorage(ReaderPreferences.spacingKey) private var spacingRaw = ReaderSpacing.normal.rawValue
     @AppStorage(ReaderPreferences.marginsKey) private var marginsRaw = ReaderMargins.normal.rawValue
     @AppStorage(ReaderPreferences.justifiedKey) private var justified = true

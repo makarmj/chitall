@@ -73,7 +73,10 @@ struct ThemeColors {
 }
 
 /// Book fonts. All of them have Cyrillic; a missing family falls back to the system serif.
+/// Source Serif 4 is bundled with the app (Adobe, SIL Open Font License 1.1, see Resources/Fonts):
+/// the closest open font to the text face of Claude, which itself is not licensed for apps.
 enum ReaderFont: String, CaseIterable, Identifiable {
+    case sourceSerif
     case newYork
     case ptSerif
     case georgia
@@ -84,6 +87,7 @@ enum ReaderFont: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .sourceSerif: return "Source Serif"
         case .newYork: return "New York"
         case .ptSerif: return "PT Serif"
         case .georgia: return "Georgia"
@@ -96,6 +100,7 @@ enum ReaderFont: String, CaseIterable, Identifiable {
     var familyName: String? {
         switch self {
         case .newYork, .sanFrancisco: return nil
+        case .sourceSerif: return "Source Serif 4"
         case .ptSerif: return "PT Serif"
         case .georgia: return "Georgia"
         case .ptSans: return "PT Sans"

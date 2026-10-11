@@ -44,6 +44,13 @@
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<false/>
+	<key>UIAppFonts</key>
+	<array>
+		<string>SourceSerif4-Regular.ttf</string>
+		<string>SourceSerif4-It.ttf</string>
+		<string>SourceSerif4-Bold.ttf</string>
+		<string>SourceSerif4-BoldIt.ttf</string>
+	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>

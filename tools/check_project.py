@@ -191,6 +191,12 @@ def check_plists():
         fail("Info.plist: FB2 type is not declared")
     if not handled <= declared | {"public.zip-archive"}:
         fail("Info.plist: document types reference undeclared UTIs")
+    fonts = ROOT / "Chitall" / "Resources" / "Fonts"
+    for font in info.get("UIAppFonts", []):
+        if not (fonts / font).is_file():
+            fail(f"Info.plist: UIAppFonts lists {font}, but Chitall/Resources/Fonts/{font} is missing")
+    if info.get("UIAppFonts") and not any(fonts.glob("*OFL*.txt")):
+        fail("bundled fonts need their licence text next to them")
     privacy = plistlib.loads((ROOT / "Chitall" / "Resources" / "PrivacyInfo.xcprivacy").read_bytes())
     if privacy.get("NSPrivacyTracking") is not False:
         fail("PrivacyInfo: tracking must be false")

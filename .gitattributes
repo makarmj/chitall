@@ -4,3 +4,4 @@
 *.pbxproj text eol=lf
 *.swift text eol=lf
 *.md text eol=lf
+*.ttf binary

@@ -47,6 +47,29 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | tee xcodebuild.log
 
+      - name: Build an unsigned IPA for sideloading (Sideloadly / AltStore sign it)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Chitall.xcodeproj \
+            -scheme Chitall \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/ipa" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tail -5
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$RUNNER_TEMP/ipa/Build/Products/Release-iphoneos/Chitall.app" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qry "$GITHUB_WORKSPACE/Chitall.ipa" Payload)
+          ls -la Chitall.ipa
+
+      - name: Keep the IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: Chitall-ipa
+          path: Chitall.ipa
+          retention-days: 30
+
       - name: Show failing test messages
         if: failure()
         run: |

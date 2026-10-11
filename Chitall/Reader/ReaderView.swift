@@ -7,7 +7,7 @@ struct ReaderView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
-    @AppStorage(ReaderPreferences.fontKey) private var fontRaw = ReaderFont.newYork.rawValue
+    @AppStorage(ReaderPreferences.fontKey) private var fontRaw = ReaderFont.sourceSerif.rawValue
     @AppStorage(ReaderPreferences.spacingKey) private var spacingRaw = ReaderSpacing.normal.rawValue
     @AppStorage(ReaderPreferences.marginsKey) private var marginsRaw = ReaderMargins.normal.rawValue
     @AppStorage(ReaderPreferences.justifiedKey) private var justified = true
@@ -58,7 +58,7 @@ struct ReaderView: View {
         ReaderStyle(
             fontSize: CGFloat(fontSize),
             lineSpacing: (ReaderSpacing(rawValue: spacingRaw) ?? .normal).lineHeightMultiple,
-            font: ReaderFont(rawValue: fontRaw) ?? .newYork,
+            font: ReaderFont(rawValue: fontRaw) ?? .sourceSerif,
             theme: theme,
             justified: justified,
             margins: ReaderMargins(rawValue: marginsRaw) ?? .normal

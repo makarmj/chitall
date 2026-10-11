@@ -439,6 +439,7 @@ final class AppTests: XCTestCase {
 
     func testReaderFontsExistWithCyrillic() {
         // The two system designs and Georgia ship with every iOS; the rest only if installed.
+        XCTAssertTrue(ReaderFont.available.contains(.sourceSerif), "Source Serif 4 is bundled and registered")
         XCTAssertTrue(ReaderFont.available.contains(.newYork))
         XCTAssertTrue(ReaderFont.available.contains(.sanFrancisco))
         XCTAssertTrue(ReaderFont.available.contains(.georgia), "families: \(UIFont.familyNames.sorted())")
