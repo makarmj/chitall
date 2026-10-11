@@ -275,8 +275,12 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     /// Chapter and offset of the first line under the top bar.
     private func currentPosition() -> (chapter: Int, offset: Int)? {
+        position(atContentY: tableView.contentOffset.y + tableView.adjustedContentInset.top + 1)
+    }
+
+    /// Chapter and offset of the line at a content y (falls back to the nearest visible row).
+    private func position(atContentY y: CGFloat) -> (chapter: Int, offset: Int)? {
         guard !loaded.isEmpty else { return nil }
-        let y = tableView.contentOffset.y + tableView.adjustedContentInset.top + 1
         guard let indexPath = tableView.indexPathForRow(at: CGPoint(x: tableView.bounds.midX, y: y)) ?? tableView.indexPathsForVisibleRows?.first,
               let ref = row(at: indexPath.row) else { return nil }
         let chapter = loaded[ref.slot]
@@ -287,19 +291,30 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         return (chapter.chapter, chapter.ranges[ref.chunk].location)
     }
 
+    /// End of what is visible, in the top line's chapter (for "is this screen bookmarked").
+    private func visibleEnd(for top: (chapter: Int, offset: Int)) -> Int {
+        let bottomY = tableView.contentOffset.y + tableView.bounds.height - tableView.adjustedContentInset.bottom - 1
+        if let bottom = position(atContentY: bottomY), bottom.chapter == top.chapter, bottom.offset >= top.offset {
+            return bottom.offset
+        }
+        let length = loaded.first { $0.chapter == top.chapter }.map { NSMaxRange($0.ranges[$0.ranges.count - 1]) } ?? top.offset
+        return max(top.offset, length)
+    }
+
     func reportPosition() {
         guard let position = currentPosition() else { return }
+        let end = visibleEnd(for: position)
         DispatchQueue.main.async { [weak model] in
-            model?.didScroll(chapter: position.chapter, utf16Offset: position.offset, save: true)
+            model?.didScroll(chapter: position.chapter, utf16Offset: position.offset, visibleEnd: end, save: true)
         }
     }
 
     private func reportChapterIfChanged() {
-        guard let chapter = currentPosition()?.chapter, chapter != reportedChapter else { return }
-        reportedChapter = chapter
-        let offset = currentPosition()?.offset ?? 0
+        guard let position = currentPosition(), position.chapter != reportedChapter else { return }
+        reportedChapter = position.chapter
+        let end = visibleEnd(for: position)
         DispatchQueue.main.async { [weak model] in
-            model?.didScroll(chapter: chapter, utf16Offset: offset, save: false)
+            model?.didScroll(chapter: position.chapter, utf16Offset: position.offset, visibleEnd: end, save: false)
         }
     }
 

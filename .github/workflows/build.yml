@@ -47,6 +47,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | tee xcodebuild.log
 
+      - name: Show failing test messages
+        if: failure()
+        run: |
+          # xcodebuild prints only "failed"; the messages live in the result bundle.
+          xcrun xcresulttool get test-results tests --path TestResults.xcresult | python3 -c '
+          import json, sys
+          def walk(node, path=""):
+              name = node.get("name", "")
+              if node.get("nodeType") == "Failure Message":
+                  print("FAIL", path, "::", name)
+              for child in node.get("children", []):
+                  walk(child, path + "/" + name if name else path)
+          data = json.load(sys.stdin)
+          for node in data.get("testNodes", []):
+              walk(node)
+          ' || true
+
       - name: Keep logs
         if: always()
         uses: actions/upload-artifact@v7

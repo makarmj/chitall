@@ -1,7 +1,8 @@
 import Foundation
 import SwiftData
 
-// Deliberately flat schema: no relationships between models. SwiftData on iOS 17 has known
+// Version 1 of the store, frozen: never edit these models — add a new version instead
+// (ChitallSchemaV2.swift). Deliberately flat schema: no relationships between models. SwiftData on iOS 17 has known
 // problems with relationship inverses and predicates over to-many relations (DECISIONS.md §5).
 // A highlight refers to its book by the file fingerprint and keeps its own provenance copy,
 // so it survives deletion of the book and re-attaches when the same file is imported again.
@@ -117,30 +118,5 @@ enum ChitallSchemaV1: VersionedSchema {
             self.sortOrder = sortOrder
             self.createdAt = createdAt
         }
-    }
-}
-
-enum ChitallMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [ChitallSchemaV1.self] }
-    static var stages: [MigrationStage] { [] }
-}
-
-typealias StoredBook = ChitallSchemaV1.StoredBook
-typealias Highlight = ChitallSchemaV1.Highlight
-typealias TagRecord = ChitallSchemaV1.TagRecord
-
-enum ChitallStore {
-    /// On-device store only: CloudKit is explicitly off (no accounts, no sync in the MVP).
-    static func makeContainer(inMemory: Bool = false, storeURL: URL? = nil) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: ChitallSchemaV1.self)
-        let configuration: ModelConfiguration
-        if inMemory {
-            configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
-        } else if let storeURL {
-            configuration = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
-        } else {
-            configuration = ModelConfiguration("Chitall", schema: schema, cloudKitDatabase: .none)
-        }
-        return try ModelContainer(for: schema, migrationPlan: ChitallMigrationPlan.self, configurations: configuration)
     }
 }

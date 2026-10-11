@@ -17,6 +17,8 @@ struct ReaderView: View {
     @AppStorage(ReaderPreferences.pageHintShownKey) private var pageHintShown = false
 
     @Query private var highlights: [Highlight]
+    @Query private var bookmarks: [Bookmark]
+    @Query(sort: [SortDescriptor(\TagRecord.sortOrder), SortDescriptor(\TagRecord.name)]) private var tagCatalog: [TagRecord]
     @State private var model: ReaderModel
     @State private var editingHighlight: Highlight?
     @State private var highlightToDelete: Highlight?
@@ -37,6 +39,10 @@ struct ReaderView: View {
         _highlights = Query(
             filter: #Predicate<Highlight> { $0.bookFingerprint == fingerprint },
             sort: \Highlight.progression
+        )
+        _bookmarks = Query(
+            filter: #Predicate<Bookmark> { $0.bookFingerprint == fingerprint },
+            sort: \Bookmark.progression
         )
         _model = State(initialValue: ReaderModel(book: book, files: files))
         self.initialHighlightID = initialHighlightID
@@ -78,7 +84,8 @@ struct ReaderView: View {
             onTapText: {
                 model.clearSearchHighlight()
                 withAnimation(.easeInOut(duration: 0.2)) { model.chromeVisible.toggle() }
-            }
+            },
+            quickTags: tagCatalog.map(\.name)
         )
     }
 
@@ -118,6 +125,7 @@ struct ReaderView: View {
                         style: model.style,
                         decorations: model.decorationsAroundCurrentChapter(for: highlights),
                         numbering: model.pageNumbering,
+                        bookmarks: model.bookmarkOffsetsAroundCurrentChapter(bookmarks),
                         navigation: model.navigation,
                         actions: textActions
                     )
@@ -191,6 +199,7 @@ struct ReaderView: View {
             ContentsSheet(
                 model: model,
                 highlights: highlights,
+                bookmarks: bookmarks,
                 initialTab: tab,
                 onSelectChapter: { index in
                     model.show(chapter: index)
@@ -203,6 +212,14 @@ struct ReaderView: View {
                 onSelectHighlight: { highlight in
                     model.go(to: highlight)
                     contentsTab = nil
+                },
+                onSelectBookmark: { bookmark in
+                    model.go(to: bookmark)
+                    contentsTab = nil
+                },
+                onDeleteBookmark: { bookmark in
+                    context.delete(bookmark)
+                    try? context.save()
                 }
             )
         }
@@ -252,6 +269,7 @@ struct ReaderView: View {
                 Button { showsSearch = true } label: { Label("Поиск по книге", systemImage: "magnifyingglass") }
                 Button { contentsTab = .chapters } label: { Label("Оглавление", systemImage: "list.bullet") }
                 Button { contentsTab = .highlights } label: { Label("Выделения книги", systemImage: "text.quote") }
+                Button { contentsTab = .bookmarks } label: { Label("Закладки", systemImage: "bookmark") }
                 Button { bookExport = makeBookExport() } label: { Label("Экспорт материалов книги", systemImage: "square.and.arrow.up") }
                     .disabled(highlights.isEmpty)
                 Button { showsBookInfo = true } label: { Label("О книге", systemImage: "info.circle") }
@@ -313,12 +331,11 @@ struct ReaderView: View {
             HStack {
                 toolbarButton("text.quote", "Выделения книги") { contentsTab = .highlights }
                 Spacer()
-                toolbarButton("magnifyingglass", "Поиск по книге") { showsSearch = true }
+                bookmarkButton
                 Spacer()
                 toolbarButton("textformat.size", "Оформление") { showsSettings = true }
                 Spacer()
-                toolbarButton("square.and.arrow.up", "Экспорт материалов книги") { bookExport = makeBookExport() }
-                    .disabled(highlights.isEmpty)
+                toolbarButton("magnifyingglass", "Поиск по книге") { showsSearch = true }
             }
             .padding(.horizontal, 12)
             .padding(.top, 4)
@@ -329,6 +346,14 @@ struct ReaderView: View {
         .padding(.bottom, 6)
         .background(Color(uiColor: colors.chrome).ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(Color(uiColor: colors.divider)).frame(height: 0.5) }
+    }
+
+    private var bookmarkButton: some View {
+        let marked = model.bookmarkOnScreen(in: bookmarks) != nil
+        return toolbarButton(marked ? "bookmark.fill" : "bookmark", marked ? "Убрать закладку" : "Добавить закладку") {
+            model.toggleBookmark(in: bookmarks, context: context)
+        }
+        .foregroundStyle(Color(uiColor: marked ? colors.accent : colors.text))
     }
 
     private func toolbarButton(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
@@ -388,6 +413,9 @@ struct ReaderView: View {
         case let .highlightWithThought(selection):
             let color = HighlightColor(storedValue: lastColorRaw)
             editingHighlight = model.createHighlight(for: selection, color: color, context: context)
+        case let .highlightWithTag(selection, tag):
+            let color = HighlightColor(storedValue: lastColorRaw)
+            _ = model.createHighlight(for: selection, color: color, tags: [tag], context: context)
         case let .open(id):
             editingHighlight = highlights.first { $0.id == id }
         }

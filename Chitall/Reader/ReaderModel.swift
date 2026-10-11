@@ -73,6 +73,8 @@ final class ReaderModel {
     private(set) var searchHighlight: ChapterRange?
     /// Page counts of every chapter for the current page layout (computed in the background).
     private(set) var pageNumbering: PageNumbering?
+    /// What is on screen now: the page in page mode, top to bottom of the screen in scroll mode.
+    private(set) var visibleRange: ChapterRange?
     var chromeVisible = true
     /// The query of the search sheet, kept while the book is open.
     @ObservationIgnored var lastSearchQuery = ""
@@ -239,11 +241,17 @@ final class ReaderModel {
     // MARK: Position reports from the views
 
     /// Page mode: the user turned to another page (possibly in another chapter).
-    func didShowPage(chapter: Int, page: Int, pageCount: Int, firstOffset: Int) {
+    func didShowPage(chapter: Int, page: Int, pageCount: Int, firstOffset: Int, endOffset: Int) {
         if chapter != chapterIndex { chapterIndex = chapter }
         let status = PageStatus(chapter: chapter, page: page, pageCount: pageCount)
         if pageStatus != status { pageStatus = status }
+        setVisible(chapter: chapter, from: firstOffset, to: endOffset)
         saveReadingPosition(chapter: chapter, atUTF16: firstOffset)
+    }
+
+    private func setVisible(chapter: Int, from start: Int, to end: Int) {
+        let range = ChapterRange(chapter: chapter, range: NSRange(location: start, length: max(0, end - start)))
+        if visibleRange != range { visibleRange = range }
     }
 
     /// Paginates the whole book for a page layout off the main thread, so pages can show
@@ -269,9 +277,10 @@ final class ReaderModel {
     }
 
     /// Continuous mode: the reader scrolled; `save` once scrolling has settled.
-    func didScroll(chapter: Int, utf16Offset offset: Int, save: Bool) {
+    func didScroll(chapter: Int, utf16Offset offset: Int, visibleEnd: Int, save: Bool) {
         if chapter != chapterIndex { chapterIndex = chapter }
         if pageStatus != nil { pageStatus = nil }
+        setVisible(chapter: chapter, from: offset, to: visibleEnd)
         if save {
             saveReadingPosition(chapter: chapter, atUTF16: offset)
         } else {
@@ -366,7 +375,7 @@ final class ReaderModel {
     }
 
     /// Creates a highlight for a display selection. Returns `nil` if it contains no text.
-    func createHighlight(for selection: ChapterRange, color: HighlightColor, context: ModelContext) -> Highlight? {
+    func createHighlight(for selection: ChapterRange, color: HighlightColor, tags: [String] = [], context: ModelContext) -> Highlight? {
         guard let rendered = rendered(chapter: selection.chapter), let service, let book else { return nil }
         let display = selection.range.location..<(selection.range.location + selection.range.length)
         guard let range = rendered.text.blockRange(forUTF16: display),
@@ -384,9 +393,78 @@ final class ReaderModel {
             locatorJSON: json,
             progression: locator.progression
         )
+        let tagNames = TagNames.normalizeAll(tags)
+        if !tagNames.isEmpty {
+            highlight.tags = tagNames
+            for name in tagNames { TagCatalog.ensure(name, in: context) }
+        }
         context.insert(highlight)
         try? context.save()
         resolutions[highlight.id] = (json, .exact(range))
         return highlight
+    }
+
+    // MARK: Bookmarks
+
+    /// Chapter and display offset of a bookmark in the current book file.
+    func position(of bookmark: Bookmark) -> (chapter: Int, offset: Int)? {
+        guard let locator = try? Locator.fromJSONString(bookmark.locatorJSON), let service, let book,
+              case let .caret(position) = service.resolve(locator),
+              let chapter = book.chapterIndex(ofBlock: position.block),
+              let offset = rendered(chapter: chapter)?.text.utf16Offset(of: position) else { return nil }
+        return (chapter, offset)
+    }
+
+    /// The bookmark on the page (or screen) the reader sees now, if any.
+    func bookmarkOnScreen(in bookmarks: [Bookmark]) -> Bookmark? {
+        guard let visible = visibleRange else { return nil }
+        return bookmarks.first { bookmark in
+            guard let position = position(of: bookmark), position.chapter == visible.chapter else { return false }
+            return position.offset >= visible.range.location && position.offset <= NSMaxRange(visible.range)
+        }
+    }
+
+    /// Adds a bookmark at the first line on screen, or removes the one already there.
+    func toggleBookmark(in bookmarks: [Bookmark], context: ModelContext) {
+        if let existing = bookmarkOnScreen(in: bookmarks) {
+            context.delete(existing)
+            try? context.save()
+            return
+        }
+        guard let visible = visibleRange, let book, let service,
+              let text = rendered(chapter: visible.chapter)?.text,
+              let position = text.position(atUTF16: visible.range.location, forward: true),
+              let locator = service.locator(at: position),
+              let json = try? locator.jsonString() else { return }
+        let snippet = book.text(after: position, limit: 100)
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        context.insert(Bookmark(
+            bookFingerprint: storedBook.fingerprint,
+            chapterIndex: visible.chapter,
+            chapterTitle: book.chapters[visible.chapter].title,
+            snippet: snippet,
+            locatorJSON: json,
+            progression: locator.progression
+        ))
+        try? context.save()
+    }
+
+    func go(to bookmark: Bookmark) {
+        guard let position = position(of: bookmark) else { return }
+        chapterIndex = position.chapter
+        navigation = NavigationRequest(chapter: position.chapter, utf16Offset: position.offset, placement: .top)
+        lastPosition = (position.chapter, position.offset)
+    }
+
+    /// Bookmark offsets for the current chapter and its neighbours (ribbons on pages).
+    func bookmarkOffsetsAroundCurrentChapter(_ bookmarks: [Bookmark]) -> [Int: [Int]] {
+        var result: [Int: [Int]] = [:]
+        for bookmark in bookmarks {
+            guard let position = position(of: bookmark), abs(position.chapter - chapterIndex) <= 1 else { continue }
+            result[position.chapter, default: []].append(position.offset)
+        }
+        return result
     }
 }

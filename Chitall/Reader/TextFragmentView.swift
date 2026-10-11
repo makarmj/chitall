@@ -148,6 +148,7 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         return ReaderEditMenu.make(
             for: selection,
             decorations: decorations,
+            quickTags: actions.quickTags,
             suggestedActions: suggestedActions,
             perform: { [weak self] action in self?.actions.onSelectionAction(action) },
             clearSelection: { [weak textView] in textView?.selectedRange = NSRange(location: localRange.location, length: 0) }

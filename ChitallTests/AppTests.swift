@@ -68,6 +68,41 @@ final class AppTests: XCTestCase {
         XCTAssertEqual(highlight.locator?.start.path, "/FictionBook/body[1]/section[1]/p[1]")
     }
 
+    func testVersion1StoreMigratesToVersion2KeepingHighlights() throws {
+        let storeURL = temporaryRoot.appendingPathComponent("v1.store")
+        do {
+            // A store exactly as the first app version wrote it.
+            let v1 = Schema(versionedSchema: ChitallSchemaV1.self)
+            let container = try ModelContainer(for: v1, configurations: ModelConfiguration(schema: v1, url: storeURL, cloudKitDatabase: .none))
+            let context = ModelContext(container)
+            context.insert(ChitallSchemaV1.StoredBook(
+                fingerprint: "sha256:old", title: "Старая книга", authors: "Автор",
+                fileName: "old.fb2", originalFileName: "old.fb2", fileSize: 10, chapterCount: 1
+            ))
+            let highlight = ChitallSchemaV1.Highlight(
+                bookFingerprint: "sha256:old", bookTitle: "Старая книга", bookAuthors: "Автор",
+                chapterIndex: 0, chapterTitle: "Глава", text: "цитата", colorKey: "olive",
+                locatorJSON: "{}", progression: 0.5
+            )
+            highlight.tags = ["тайна"]
+            highlight.note = "мысль"
+            context.insert(highlight)
+            try context.save()
+        }
+
+        let migrated = try ChitallStore.makeContainer(storeURL: storeURL)
+        let context = ModelContext(migrated)
+        let highlights = try context.fetch(FetchDescriptor<Highlight>())
+        XCTAssertEqual(highlights.count, 1)
+        XCTAssertEqual(highlights.first?.text, "цитата")
+        XCTAssertEqual(highlights.first?.note, "мысль")
+        XCTAssertEqual(highlights.first?.tags, ["тайна"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<StoredBook>()).first?.title, "Старая книга")
+        context.insert(Bookmark(bookFingerprint: "sha256:old", chapterIndex: 0, chapterTitle: "Глава", snippet: "", locatorJSON: "{}", progression: 0))
+        try context.save()
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Bookmark>()), 1)
+    }
+
     // MARK: Import and library
 
     func testImportSampleThenDuplicateThenDeleteKeepingMaterials() async throws {
@@ -227,6 +262,57 @@ final class AppTests: XCTestCase {
         XCTAssertTrue(model.decorations(for: [], chapter: hit.chapterIndex).isEmpty)
     }
 
+    func testBookmarkTogglesOnTheVisiblePageAndOpensItsPlace() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: context) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+
+        model.didShowPage(chapter: 2, page: 0, pageCount: 3, firstOffset: 0, endOffset: 300)
+        model.toggleBookmark(in: [], context: context)
+        var bookmarks = try context.fetch(FetchDescriptor<Bookmark>())
+        XCTAssertEqual(bookmarks.count, 1)
+        let bookmark = try XCTUnwrap(bookmarks.first)
+        XCTAssertEqual(bookmark.chapterIndex, 2)
+        XCTAssertEqual(bookmark.chapterTitle, "Глава вторая. Досмотр")
+        XCTAssertFalse(bookmark.snippet.isEmpty)
+        XCTAssertTrue(model.bookmarkOnScreen(in: bookmarks) === bookmark)
+
+        model.didShowPage(chapter: 3, page: 0, pageCount: 2, firstOffset: 0, endOffset: 300)
+        XCTAssertNil(model.bookmarkOnScreen(in: bookmarks))
+        model.go(to: bookmark)
+        XCTAssertEqual(model.navigation?.chapter, 2)
+        XCTAssertEqual(model.navigation?.utf16Offset, 0)
+        XCTAssertEqual(model.bookmarkOffsetsAroundCurrentChapter(bookmarks)[2], [0])
+
+        model.didShowPage(chapter: 2, page: 0, pageCount: 3, firstOffset: 0, endOffset: 300)
+        model.toggleBookmark(in: bookmarks, context: context)
+        bookmarks = try context.fetch(FetchDescriptor<Bookmark>())
+        XCTAssertTrue(bookmarks.isEmpty, "a second tap removes the bookmark")
+    }
+
+    func testQuickTagCreatesATaggedHighlight() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: context) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        let text = try XCTUnwrap(model.rendered(chapter: 1)).text.string as NSString
+        let range = text.range(of: "белый")
+        let highlight = try XCTUnwrap(model.createHighlight(for: ChapterRange(chapter: 1, range: range), color: .lilac, tags: ["#Свет", "свет"], context: context))
+        XCTAssertEqual(highlight.tags, ["свет"])
+        XCTAssertEqual(highlight.color, .lilac)
+        let catalog = try context.fetch(FetchDescriptor<TagRecord>()).map(\.name)
+        XCTAssertTrue(catalog.contains("свет"))
+    }
+
     // MARK: Pagination
 
     private func renderedSampleChapters(fontSize: CGFloat = 19) throws -> [NSAttributedString] {
@@ -352,7 +438,15 @@ final class AppTests: XCTestCase {
     // MARK: Appearance
 
     func testReaderFontsExistWithCyrillic() {
-        for font in ReaderFont.allCases {
+        // The two system designs and Georgia ship with every iOS; the rest only if installed.
+        XCTAssertTrue(ReaderFont.available.contains(.newYork))
+        XCTAssertTrue(ReaderFont.available.contains(.sanFrancisco))
+        XCTAssertTrue(ReaderFont.available.contains(.georgia), "families: \(UIFont.familyNames.sorted())")
+        for font in ReaderFont.allCases where !font.isInstalled {
+            // A missing family must fall back to the book serif, not to an arbitrary font.
+            XCTAssertEqual(font.font(size: 17).familyName, ReaderFont.newYork.font(size: 17).familyName)
+        }
+        for font in ReaderFont.available {
             let uiFont = font.font(size: 17)
             if let family = font.familyName {
                 XCTAssertEqual(uiFont.familyName, family, "\(font.title) is installed")

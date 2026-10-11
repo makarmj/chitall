@@ -8,6 +8,8 @@ struct PagedBookView: UIViewControllerRepresentable {
     var style: ReaderStyle
     var decorations: [Int: [HighlightDecoration]]
     var numbering: PageNumbering?
+    /// Display offsets of bookmarks per chapter (around the current one).
+    var bookmarks: [Int: [Int]]
     var navigation: NavigationRequest?
     var actions: ReaderTextActions
 
@@ -17,7 +19,7 @@ struct PagedBookView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: PagedReaderController, context: Context) {
         controller.actions = actions
-        controller.update(style: style, decorations: decorations, numbering: numbering, navigation: navigation)
+        controller.update(style: style, decorations: decorations, numbering: numbering, bookmarks: bookmarks, navigation: navigation)
     }
 
     static func dismantleUIViewController(_ controller: PagedReaderController, coordinator: ()) {
@@ -46,6 +48,7 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
     private var style: ReaderStyle?
     private var decorations: [Int: [HighlightDecoration]] = [:]
     private var numbering: PageNumbering?
+    private var bookmarks: [Int: [Int]] = [:]
     private var handledNavigation: UUID?
     private var pendingNavigation: NavigationRequest?
 
@@ -96,7 +99,14 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
 
     // MARK: Updates from SwiftUI
 
-    func update(style newStyle: ReaderStyle, decorations newDecorations: [Int: [HighlightDecoration]], numbering newNumbering: PageNumbering?, navigation: NavigationRequest?) {
+    func update(style newStyle: ReaderStyle, decorations newDecorations: [Int: [HighlightDecoration]], numbering newNumbering: PageNumbering?, bookmarks newBookmarks: [Int: [Int]], navigation: NavigationRequest?) {
+        if newBookmarks != bookmarks {
+            bookmarks = newBookmarks
+            for case let page as PageViewController in pager.viewControllers ?? [] {
+                page.isBookmarked = isBookmarked(page)
+            }
+        }
+
         if newStyle != style {
             let anchor = currentPage.map { (chapter: $0.location.chapter, offset: $0.range.location) }
             style = newStyle
@@ -143,6 +153,10 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         pager.view.backgroundColor = colors.background
     }
 
+    private func isBookmarked(_ page: PageViewController) -> Bool {
+        (bookmarks[page.location.chapter] ?? []).contains { $0 >= page.range.location && $0 < NSMaxRange(page.range) }
+    }
+
     /// "118 из 294" when the whole book is paginated for this layout, else "5 / 23" in the chapter.
     private func pageLabel(for location: PageLocation, pageCount: Int) -> String {
         if let numbering, numbering.layoutKey == layoutKey, let global = numbering.pageNumber(chapter: location.chapter, page: location.page) {
@@ -183,6 +197,7 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
             colors: style.colors
         )
         page.pageLabel = pageLabel(for: location, pageCount: pages.count)
+        page.isBookmarked = isBookmarked(page)
         page.apply(decorations: decorations[location.chapter] ?? [])
         page.actions = actions
         page.onTurn = { [weak self] forward in self?.turn(forward: forward) }
@@ -259,9 +274,10 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         guard let page = currentPage else { return }
         let location = page.location
         let firstOffset = page.range.location
+        let endOffset = NSMaxRange(page.range)
         let count = page.pageCount
         DispatchQueue.main.async { [weak self, weak model] in
-            model?.didShowPage(chapter: location.chapter, page: location.page, pageCount: count, firstOffset: firstOffset)
+            model?.didShowPage(chapter: location.chapter, page: location.page, pageCount: count, firstOffset: firstOffset, endOffset: endOffset)
             self?.prefetchNeighbours(of: location, pageCount: count)
         }
     }
@@ -327,6 +343,10 @@ final class PageViewController: UIViewController {
     var pageLabel = "" {
         didSet { footer.text = pageLabel }
     }
+    var isBookmarked = false {
+        didSet { ribbon.isHidden = !isBookmarked }
+    }
+    private let ribbon = UIImageView(image: UIImage(systemName: "bookmark.fill"))
 
     init(location: PageLocation, range: NSRange, pageCount: Int, chapterTitle: String, content: NSAttributedString, geometry: PageGeometry, colors: ThemeColors) {
         self.location = location
@@ -367,6 +387,12 @@ final class PageViewController: UIViewController {
             label.isUserInteractionEnabled = false // taps on the title or page number still turn pages
             fragment.addSubview(label)
         }
+        ribbon.tintColor = colors.accent
+        ribbon.contentMode = .scaleAspectFit
+        ribbon.isHidden = !isBookmarked
+        ribbon.isUserInteractionEnabled = false
+        ribbon.accessibilityLabel = "Закладка"
+        fragment.addSubview(ribbon)
     }
 
     override func viewDidLayoutSubviews() {
@@ -378,6 +404,7 @@ final class PageViewController: UIViewController {
         fragment.textFrame = frame
         header.frame = CGRect(x: frame.minX, y: frame.minY - PageGeometry.headerHeight, width: frame.width, height: PageGeometry.headerHeight - 6)
         footer.frame = CGRect(x: frame.minX, y: geometry.textFrame.maxY + 6, width: frame.width, height: PageGeometry.footerHeight - 6)
+        ribbon.frame = CGRect(x: view.bounds.width - 30, y: frame.minY - PageGeometry.headerHeight, width: 16, height: 22)
     }
 
     func apply(decorations newDecorations: [HighlightDecoration]) {

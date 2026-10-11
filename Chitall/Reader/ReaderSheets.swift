@@ -2,6 +2,7 @@ import SwiftUI
 
 enum ContentsTab: String, CaseIterable, Identifiable {
     case chapters
+    case bookmarks
     case highlights
 
     var id: String { rawValue }
@@ -9,6 +10,7 @@ enum ContentsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .chapters: return "Оглавление"
+        case .bookmarks: return "Закладки"
         case .highlights: return "Выделения"
         }
     }
@@ -18,25 +20,34 @@ enum ContentsTab: String, CaseIterable, Identifiable {
 struct ContentsSheet: View {
     let model: ReaderModel
     let highlights: [Highlight]
+    let bookmarks: [Bookmark]
     var onSelectChapter: (Int) -> Void
     var onSelectEntry: (TOCEntry) -> Void
     var onSelectHighlight: (Highlight) -> Void
+    var onSelectBookmark: (Bookmark) -> Void
+    var onDeleteBookmark: (Bookmark) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var tab: ContentsTab
 
     init(
         model: ReaderModel,
         highlights: [Highlight],
+        bookmarks: [Bookmark],
         initialTab: ContentsTab,
         onSelectChapter: @escaping (Int) -> Void,
         onSelectEntry: @escaping (TOCEntry) -> Void,
-        onSelectHighlight: @escaping (Highlight) -> Void
+        onSelectHighlight: @escaping (Highlight) -> Void,
+        onSelectBookmark: @escaping (Bookmark) -> Void,
+        onDeleteBookmark: @escaping (Bookmark) -> Void
     ) {
         self.model = model
         self.highlights = highlights
+        self.bookmarks = bookmarks
         self.onSelectChapter = onSelectChapter
         self.onSelectEntry = onSelectEntry
         self.onSelectHighlight = onSelectHighlight
+        self.onSelectBookmark = onSelectBookmark
+        self.onDeleteBookmark = onDeleteBookmark
         _tab = State(initialValue: initialTab)
     }
 
@@ -45,6 +56,7 @@ struct ContentsSheet: View {
             List {
                 switch tab {
                 case .chapters: chapterRows
+                case .bookmarks: bookmarkRows
                 case .highlights: highlightRows
                 }
             }
@@ -59,7 +71,7 @@ struct ContentsSheet: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 260)
+                    .frame(width: 300)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Готово") { dismiss() }
@@ -112,6 +124,40 @@ struct ContentsSheet: View {
                 Text("\(RussianPlural.highlights(unresolved)) не найдено в тексте этой версии файла. Они сохранены в «Материалах» с цитатой и источником.")
                     .font(.footnote)
                     .foregroundStyle(Palette.secondaryInk)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var bookmarkRows: some View {
+        if bookmarks.isEmpty {
+            Text("Закладок пока нет. Нажмите на значок закладки внизу, чтобы отметить страницу.")
+                .font(.callout)
+                .foregroundStyle(Palette.secondaryInk)
+                .listRowBackground(Color.clear)
+        } else {
+            Section {
+                ForEach(bookmarks) { bookmark in
+                    Button {
+                        onSelectBookmark(bookmark)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(bookmark.snippet.isEmpty ? "Закладка" : "«\(bookmark.snippet)…»")
+                                .font(Typography.serif(.body))
+                                .foregroundStyle(Palette.ink)
+                                .lineLimit(2)
+                            Text("\(bookmark.chapterTitle) · \(MaterialExport.percent(bookmark.progression)) · \(RussianDates.dayAndTime(bookmark.createdAt))")
+                                .font(.caption)
+                                .foregroundStyle(Palette.secondaryInk)
+                                .lineLimit(1)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .onDelete { offsets in
+                    for index in offsets { onDeleteBookmark(bookmarks[index]) }
+                }
             }
         }
     }
@@ -291,7 +337,7 @@ struct ReaderSettingsView: View {
         HStack(spacing: 16) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(ReaderFont.allCases) { font in
+                    ForEach(ReaderFont.available) { font in
                         let selected = fontRaw == font.rawValue
                         Button {
                             fontRaw = font.rawValue

@@ -102,7 +102,17 @@ enum ReaderFont: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Fonts actually installed on this device (system designs always are).
+    static var available: [ReaderFont] { allCases.filter(\.isInstalled) }
+
+    var isInstalled: Bool {
+        guard let familyName else { return true }
+        return UIFont.familyNames.contains(familyName)
+    }
+
     func font(size: CGFloat, weight: UIFont.Weight = .regular, traits: UIFontDescriptor.SymbolicTraits = []) -> UIFont {
+        // A family missing on this iOS falls back to the book serif, never to a random font.
+        guard isInstalled else { return ReaderFont.newYork.font(size: size, weight: weight, traits: traits) }
         var traits = traits
         let descriptor: UIFontDescriptor
         if let familyName {

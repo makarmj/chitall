@@ -10,6 +10,8 @@ struct ChapterRange: Equatable {
 enum SelectionAction {
     case highlight(ChapterRange, HighlightColor)
     case highlightWithThought(ChapterRange)
+    /// Highlight in the last used colour and tag it at once, without opening the editor.
+    case highlightWithTag(ChapterRange, String)
     case open(UUID)
 }
 
@@ -19,6 +21,8 @@ struct ReaderTextActions {
     var onTapHighlight: (UUID) -> Void = { _ in }
     var onTapLink: (URL) -> Void = { _ in }
     var onTapText: () -> Void = {}
+    /// Tags offered right in the selection menu (the user's catalog order).
+    var quickTags: [String] = []
 }
 
 /// Paints highlight decorations onto a text storage that shows the chapter from `offset` on.
@@ -64,6 +68,7 @@ enum ReaderEditMenu {
     static func make(
         for selection: ChapterRange,
         decorations: [HighlightDecoration],
+        quickTags: [String] = [],
         suggestedActions: [UIMenuElement],
         perform: @escaping (SelectionAction) -> Void,
         clearSelection: @escaping () -> Void
@@ -81,6 +86,15 @@ enum ReaderEditMenu {
                 clearSelection()
             },
         ]
+        if !quickTags.isEmpty {
+            let tagActions = quickTags.prefix(10).map { tag in
+                UIAction(title: TagNames.display(tag)) { _ in
+                    perform(.highlightWithTag(selection, tag))
+                    clearSelection()
+                }
+            }
+            items.append(UIMenu(title: "Тег", image: UIImage(systemName: "number"), children: tagActions))
+        }
         if let existing = decorations.last(where: { $0.kind == .highlight && NSIntersectionRange($0.range, selection.range).length > 0 }) {
             items.append(UIAction(title: "Открыть выделение", image: UIImage(systemName: "bookmark")) { _ in
                 perform(.open(existing.id))
