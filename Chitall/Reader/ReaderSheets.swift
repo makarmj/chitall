@@ -146,7 +146,7 @@ struct ContentsSheet: View {
                                 .font(Typography.serif(.body))
                                 .foregroundStyle(Palette.ink)
                                 .lineLimit(2)
-                            Text("\(bookmark.chapterTitle) · \(MaterialExport.percent(bookmark.progression)) · \(RussianDates.dayAndTime(bookmark.createdAt))")
+                            Text("\(bookmark.chapterTitle) · \(MaterialExport.wholePercent(bookmark.progression)) · \(RussianDates.dayAndTime(bookmark.createdAt))")
                                 .font(.caption)
                                 .foregroundStyle(Palette.secondaryInk)
                                 .lineLimit(1)
@@ -252,10 +252,69 @@ struct PageZonesHint: View {
     }
 }
 
+/// A footnote as a card from the bottom, as in Yandex Books: the reader's page colours and book
+/// font, a large number, a close button, as tall as the note (long notes scroll).
+struct NoteCard: View {
+    let note: NoteContent
+    let style: ReaderStyle
+    @Environment(\.dismiss) private var dismiss
+    @State private var contentHeight: CGFloat = 160
+
+    private var colors: ThemeColors { style.colors }
+
+    private var number: String {
+        let title = note.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "Примечание" : title
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(number)
+                        .font(style.font.previewFont(size: style.fontSize * (number.count > 6 ? 1.2 : 1.7), weight: .semibold))
+                        .foregroundStyle(Color(uiColor: colors.accent))
+                        .lineLimit(2)
+                    Spacer(minLength: 12)
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Color(uiColor: colors.secondary))
+                            .frame(width: 32, height: 32)
+                            .background(Color(uiColor: colors.divider), in: Circle())
+                    }
+                    .accessibilityLabel("Закрыть сноску")
+                }
+                Text(note.text.isEmpty ? "Текст примечания пуст." : note.text)
+                    .font(style.font.previewFont(size: max(15, style.fontSize * 0.95)))
+                    .foregroundStyle(Color(uiColor: colors.text))
+                    .lineSpacing(style.fontSize * 0.25)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 12)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .presentationDetents([.height(min(contentHeight + 12, 560)), .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(22)
+        .presentationBackground(Color(uiColor: colors.background))
+        .environment(\.colorScheme, style.theme.isDark ? .dark : .light)
+    }
+}
+
 /// Reading settings in the spirit of good e-readers: brightness, page theme, font, size,
 /// spacing, margins, alignment, mode. Every change applies immediately.
+///
+/// Drawn in the reader theme's own colours: on "Чёрный" or "Дерево" the panel is dark even
+/// when the app (and so the sheet) is light, and every label must stay readable on it.
 struct ReaderSettingsView: View {
     @Binding var brightness: Double?
+    let colors: ThemeColors
+    let isDark: Bool
     @AppStorage(ReaderPreferences.fontSizeKey) private var fontSize = ReaderPreferences.defaultFontSize
     @AppStorage(ReaderPreferences.fontKey) private var fontRaw = ReaderFont.sourceSerif.rawValue
     @AppStorage(ReaderPreferences.spacingKey) private var spacingRaw = ReaderSpacing.normal.rawValue
@@ -284,13 +343,21 @@ struct ReaderSettingsView: View {
                 .pickerStyle(.segmented)
                 Text(modeRaw == ReadingMode.pages.rawValue
                      ? "Страницы: тап у правого края — вперёд, у левого — назад, в центре — панели. Свайп тоже листает."
-                     : "Прокрутка: вся книга одной лентой, главы идут подряд.")
+                     : "Прокрутка: вся книга одной лентой, главы идут подряд. Закладка отмечает строку вверху экрана: значок заполнен, пока она на экране, а сами закладки видны на полях и над ползунком.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(secondary)
             }
             .padding(22)
         }
+        .foregroundStyle(ink)
+        .tint(accent)
+        .environment(\.colorScheme, isDark ? .dark : .light)
     }
+
+    private var ink: Color { Color(uiColor: colors.text) }
+    private var secondary: Color { Color(uiColor: colors.secondary) }
+    private var accent: Color { Color(uiColor: colors.accent) }
+    private var outline: Color { Color(uiColor: colors.secondary).opacity(0.45) }
 
     private var brightnessRow: some View {
         HStack(spacing: 14) {
@@ -323,7 +390,7 @@ struct ReaderSettingsView: View {
                                 theme == .system ? AnyShapeStyle(Color.clear) : AnyShapeStyle(Color(uiColor: colors.background)),
                                 in: Capsule()
                             )
-                            .overlay(Capsule().stroke(selected ? Color.accentColor : Color.secondary.opacity(0.4), lineWidth: selected ? 2 : 1))
+                            .overlay(Capsule().stroke(selected ? accent : outline, lineWidth: selected ? 2 : 1))
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(selected ? .isSelected : [])
@@ -344,9 +411,10 @@ struct ReaderSettingsView: View {
                         } label: {
                             Text(font.title)
                                 .font(font.previewFont(size: 17))
+                                .foregroundStyle(ink)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: selected ? 2 : 1))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? accent : outline, lineWidth: selected ? 2 : 1))
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -361,7 +429,7 @@ struct ReaderSettingsView: View {
                     Image(systemName: "minus").frame(width: 48, height: 40)
                 }
                 .accessibilityLabel("Уменьшить шрифт")
-                Divider().frame(height: 26)
+                Rectangle().fill(outline).frame(width: 1, height: 26)
                 Button {
                     fontSize = min(ReaderPreferences.fontSizeRange.upperBound, fontSize + 1)
                 } label: {
@@ -369,7 +437,7 @@ struct ReaderSettingsView: View {
                 }
                 .accessibilityLabel("Увеличить шрифт")
             }
-            .overlay(Capsule().stroke(Color.secondary.opacity(0.4), lineWidth: 1))
+            .overlay(Capsule().stroke(outline, lineWidth: 1))
             .accessibilityValue("\(Int(fontSize))")
         }
     }
@@ -382,8 +450,9 @@ struct ReaderSettingsView: View {
                     spacingRaw = spacing.rawValue
                 } label: {
                     LinesIcon(gap: spacing == .compact ? 3 : spacing == .normal ? 5 : 7)
+                        .foregroundStyle(selected ? accent : ink)
                         .frame(width: 40, height: 34)
-                        .opacity(selected ? 1 : 0.45)
+                        .opacity(selected ? 1 : 0.55)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(spacing.title)
@@ -400,8 +469,9 @@ struct ReaderSettingsView: View {
                     marginsRaw = margins.rawValue
                 } label: {
                     MarginsIcon(inset: margins == .narrow ? 3 : margins == .normal ? 6 : 9)
+                        .foregroundStyle(selected ? accent : ink)
                         .frame(width: 34, height: 34)
-                        .opacity(selected ? 1 : 0.45)
+                        .opacity(selected ? 1 : 0.55)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(margins.title)

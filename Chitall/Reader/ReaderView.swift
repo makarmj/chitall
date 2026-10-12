@@ -136,6 +136,7 @@ struct ReaderView: View {
                         style: model.style,
                         highlights: highlights,
                         decorationsToken: decorationsToken,
+                        bookmarks: model.bookmarkOffsets(bookmarks),
                         navigation: model.navigation,
                         actions: textActions
                     )
@@ -186,8 +187,7 @@ struct ReaderView: View {
             })
         }
         .sheet(item: $shownNote) { note in
-            NoteSheet(note: note)
-                .presentationDetents([.medium, .large])
+            NoteCard(note: note, style: model.style)
         }
         .sheet(isPresented: $showsSearch) {
             BookSearchSheet(model: model) { hit in
@@ -224,7 +224,7 @@ struct ReaderView: View {
             )
         }
         .sheet(isPresented: $showsSettings) {
-            ReaderSettingsView(brightness: $brightness)
+            ReaderSettingsView(brightness: $brightness, colors: colors, isDark: theme.isDark)
                 .presentationDetents([.height(500), .large])
                 .presentationBackground(Color(uiColor: colors.chrome))
         }
@@ -319,8 +319,9 @@ struct ReaderView: View {
                 }
             )
             .tint(Color(uiColor: colors.accent))
+            .background(alignment: .top) { bookmarkMarks }
             .accessibilityLabel("Положение в книге")
-            .accessibilityValue(MaterialExport.percent(scrubValue ?? model.storedBook.readingProgress))
+            .accessibilityValue(scrubValue.map { MaterialExport.wholePercent($0) } ?? model.progressPercent)
 
             Text(progressStatus)
                 .font(.footnote)
@@ -346,6 +347,23 @@ struct ReaderView: View {
         .padding(.bottom, 6)
         .background(Color(uiColor: colors.chrome).ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(Color(uiColor: colors.divider)).frame(height: 0.5) }
+    }
+
+    /// Small ribbons above the slider track where the bookmarks are: the whole book at a glance.
+    private var bookmarkMarks: some View {
+        GeometryReader { geometry in
+            // The track ends half a thumb in from each side of the slider.
+            let inset: CGFloat = 14
+            let width = max(0, geometry.size.width - 2 * inset)
+            ForEach(bookmarks) { bookmark in
+                Image(systemName: "bookmark.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(Color(uiColor: colors.accent))
+                    .position(x: inset + width * min(1, max(0, bookmark.progression)), y: 3)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private var bookmarkButton: some View {
@@ -378,9 +396,9 @@ struct ReaderView: View {
     private var progressStatus: String {
         if let value = scrubValue {
             let chapter = model.chapterTitle(atProgression: value) ?? ""
-            return "\(MaterialExport.percent(value)) · \(chapter)"
+            return "\(MaterialExport.wholePercent(value)) · \(chapter)"
         }
-        let percent = "\(MaterialExport.percent(model.storedBook.readingProgress)) от всей книги"
+        let percent = "\(model.progressPercent) от всей книги"
         if mode == .pages, let status = model.pageStatus, let numbering = model.pageNumbering,
            let page = numbering.pageNumber(chapter: status.chapter, page: status.page) {
             return "стр. \(page) из \(numbering.total) · \(percent)"
@@ -456,29 +474,3 @@ struct BookExportItem: Identifiable {
     let export: MaterialExport
 }
 
-struct NoteSheet: View {
-    let note: NoteContent
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                Text(note.text.isEmpty ? "Текст примечания пуст." : note.text)
-                    .font(Typography.serif(.body))
-                    .foregroundStyle(Palette.ink)
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
-            }
-            .background(Palette.background)
-            .navigationTitle(note.title.isEmpty ? "Примечание" : "Примечание \(note.title)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Готово") { dismiss() }
-                }
-            }
-        }
-    }
-}

@@ -26,12 +26,13 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var decorations: [HighlightDecoration] = []
     private lazy var edgeTap = UITapGestureRecognizer(target: self, action: #selector(handleEdgeTap(_:)))
     private lazy var centerTap = UITapGestureRecognizer(target: self, action: #selector(handleCenterTap(_:)))
+    private lazy var linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         textView.delegate = self
         addSubview(textView)
-        for tap in [edgeTap, centerTap] {
+        for tap in [edgeTap, centerTap, linkTap] {
             tap.delegate = self
             addGestureRecognizer(tap)
         }
@@ -73,6 +74,17 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         return range.location + local
     }
 
+    /// The line that holds a chapter offset, in this view's coordinates (`nil` if outside).
+    func lineFrame(ofChapterOffset offset: Int) -> CGRect? {
+        let local = offset - range.location
+        let storage = textView.textStorage
+        guard storage.length > 0, local >= 0, local <= range.length else { return nil }
+        let layoutManager = textView.layoutManager
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(local, storage.length - 1))
+        let line = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        return line.offsetBy(dx: textFrame.minX, dy: textFrame.minY)
+    }
+
     // MARK: Taps
 
     private func isInTurnZone(_ point: CGPoint) -> Bool {
@@ -80,19 +92,39 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         return point.x < zone || point.x > bounds.width - zone
     }
 
-    private func isOnLink(_ gesture: UIGestureRecognizer) -> Bool {
-        guard let local = textView.characterIndex(at: gesture.location(in: textView)) else { return false }
-        return textView.textStorage.attribute(.link, at: local, effectiveRange: nil) != nil
+    /// An internal link (footnote number, reference) under or right next to the touch.
+    /// Superscript numbers are tiny, so a tap within a finger's width of one still opens it.
+    private func link(near gesture: UIGestureRecognizer) -> URL? {
+        let storage = textView.textStorage
+        let layoutManager = textView.layoutManager
+        guard storage.length > 0, layoutManager.numberOfGlyphs > 0 else { return nil }
+        let point = gesture.location(in: textView)
+        let glyph = layoutManager.glyphIndex(for: point, in: textView.textContainer)
+        let first = max(0, glyph - 3)
+        let last = min(layoutManager.numberOfGlyphs - 1, glyph + 3)
+        for candidate in first...last {
+            let character = layoutManager.characterIndexForGlyph(at: candidate)
+            guard character < storage.length,
+                  let url = storage.attribute(.link, at: character, effectiveRange: nil) as? URL,
+                  ReaderLinks.isInternal(url) else { continue }
+            let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: candidate, length: 1), in: textView.textContainer)
+            if rect.insetBy(dx: -14, dy: -12).contains(point) { return url }
+        }
+        return nil
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         let point = gestureRecognizer.location(in: self)
+        // A tap with text selected only dismisses the selection; a footnote number opens its note.
+        let idle = textView.selectedRange.length == 0
+        if gestureRecognizer === linkTap {
+            return idle && link(near: gestureRecognizer) != nil
+        }
         if gestureRecognizer === edgeTap {
-            // A tap with text selected only dismisses the selection; a footnote link opens itself.
-            return turnZones && isInTurnZone(point) && textView.selectedRange.length == 0 && !isOnLink(gestureRecognizer)
+            return turnZones && isInTurnZone(point) && idle && link(near: gestureRecognizer) == nil
         }
         if gestureRecognizer === centerTap {
-            return !(turnZones && isInTurnZone(point)) && textView.selectedRange.length == 0 && !isOnLink(gestureRecognizer)
+            return !(turnZones && isInTurnZone(point)) && idle && link(near: gestureRecognizer) == nil
         }
         return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
@@ -121,6 +153,11 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     @objc private func handleEdgeTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended else { return }
         onTurn(gesture.location(in: self).x > bounds.width / 2)
+    }
+
+    @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let url = link(near: gesture) else { return }
+        actions.onTapLink(url)
     }
 
     @objc private func handleCenterTap(_ gesture: UITapGestureRecognizer) {
@@ -156,9 +193,7 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     }
 
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
-        ReaderLinks.primaryAction(for: textItem, defaultAction: defaultAction) { [weak self] url in
-            self?.actions.onTapLink(url)
-        }
+        ReaderLinks.primaryAction(for: textItem, defaultAction: defaultAction)
     }
 
     func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {

@@ -203,6 +203,16 @@ final class AppTests: XCTestCase {
         }
         XCTAssertEqual(links.map(\.scheme), ["chitall-note"])
         XCTAssertEqual(links.first.flatMap(ChapterRenderer.linkTarget), "n1")
+
+        // On screen the footnote number gets a dotted underline that survives decorations.
+        let storage = NSTextStorage(attributedString: rendered)
+        DecorationPainter.apply([], to: storage, chapterOffset: 0)
+        var underlined: [Int] = []
+        storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard value != nil else { return }
+            underlined.append(storage.attribute(.underlineStyle, at: range.location, effectiveRange: nil) as? Int ?? 0)
+        }
+        XCTAssertEqual(underlined, [NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue])
     }
 
     // MARK: Reader round trip
@@ -293,6 +303,77 @@ final class AppTests: XCTestCase {
         model.toggleBookmark(in: bookmarks, context: context)
         bookmarks = try context.fetch(FetchDescriptor<Bookmark>())
         XCTAssertTrue(bookmarks.isEmpty, "a second tap removes the bookmark")
+    }
+
+    func testProgressShowsWholePercentAndHundredOnlyAtTheEnd() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        let last = model.chapters.count - 1
+        let length = try XCTUnwrap(model.rendered(chapter: last)).attributed.length
+        XCTAssertGreaterThan(length, 2)
+
+        model.didShowPage(chapter: last, page: 0, pageCount: 2, firstOffset: 0, endOffset: length / 2)
+        XCTAssertFalse(model.isAtEnd)
+        XCTAssertFalse(model.progressPercent.contains(","), "no tenths: \(model.progressPercent)")
+        XCTAssertNotEqual(model.progressPercent, "100 %")
+
+        model.didShowPage(chapter: last, page: 1, pageCount: 2, firstOffset: length / 2, endOffset: length)
+        XCTAssertTrue(model.isAtEnd)
+        XCTAssertEqual(model.progressPercent, "100 %")
+    }
+
+    func testScrollModeBookmarkFollowsTheTapeAndShowsInTheMargin() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: context) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+
+        let controller = ContinuousReaderController(model: model)
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        controller.view.layoutIfNeeded()
+        model.show(chapter: 1)
+        controller.update(style: model.style, highlights: [], decorationsToken: 0, navigation: model.navigation)
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100)) // position reports arrive asynchronously
+        XCTAssertEqual(model.visibleRange?.chapter, 1)
+
+        model.toggleBookmark(in: [], context: context)
+        let bookmarks = try context.fetch(FetchDescriptor<Bookmark>())
+        let bookmark = try XCTUnwrap(bookmarks.first)
+        XCTAssertEqual(bookmark.chapterIndex, 1)
+        XCTAssertTrue(model.bookmarkOnScreen(in: bookmarks) === bookmark, "the icon fills right away")
+
+        // A ribbon marks the bookmarked line in the margin of the tape.
+        controller.update(style: model.style, highlights: [], decorationsToken: 0, navigation: model.navigation, bookmarks: model.bookmarkOffsets(bookmarks))
+        controller.view.layoutIfNeeded()
+        let table = controller.tableView
+        let ribbons = table.visibleCells.compactMap { $0 as? ChunkCell }.flatMap(\.ribbonFrames)
+        XCTAssertEqual(ribbons.count, 1)
+        if let ribbon = ribbons.first {
+            XCTAssertGreaterThan(ribbon.minX, 390 - 24 - 1, "in the right margin, not over the text")
+        }
+
+        // Scrolling on: the bookmarked line leaves the screen and the icon empties, live.
+        let start = table.contentOffset.y
+        table.setContentOffset(CGPoint(x: 0, y: start + table.bounds.height * 1.5), animated: false)
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(model.bookmarkOnScreen(in: bookmarks))
+
+        // Back to the place: filled again, so you find where you were.
+        table.setContentOffset(CGPoint(x: 0, y: start), animated: false)
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(model.bookmarkOnScreen(in: bookmarks) === bookmark)
     }
 
     func testQuickTagCreatesATaggedHighlight() async throws {

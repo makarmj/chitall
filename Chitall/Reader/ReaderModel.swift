@@ -86,6 +86,9 @@ final class ReaderModel {
     @ObservationIgnored private var numberingKey: String?
     @ObservationIgnored private var renderCache: [Int: RenderedChapter] = [:]
     @ObservationIgnored private var resolutions: [UUID: (json: String, result: LocatorResolution)] = [:]
+    /// Display positions of bookmarks; display offsets do not depend on the typography.
+    @ObservationIgnored private var bookmarkPositions: [UUID: (json: String, chapter: Int, offset: Int)] = [:]
+    @ObservationIgnored private var chapterTexts: [Int: ChapterText] = [:]
     @ObservationIgnored private var lastPosition: (chapter: Int, utf16: Int)?
 
     init(book: StoredBook, files: BookFileStore) {
@@ -254,6 +257,28 @@ final class ReaderModel {
         if visibleRange != range { visibleRange = range }
     }
 
+    /// The end of the last chapter is on screen: only then the reader shows "100 %".
+    var isAtEnd: Bool {
+        guard let visible = visibleRange, visible.chapter == chapters.count - 1,
+              let length = chapterText(visible.chapter)?.utf16Length else { return false }
+        return NSMaxRange(visible.range) >= length
+    }
+
+    /// Whole percent of the book read, "100 %" only at the very end.
+    var progressPercent: String {
+        MaterialExport.wholePercent(storedBook.readingProgress, atEnd: isAtEnd)
+    }
+
+    /// The character map of a chapter without rendering it (cheap, cached).
+    private func chapterText(_ index: Int) -> ChapterText? {
+        if let cached = renderCache[index] { return cached.text }
+        if let cached = chapterTexts[index] { return cached }
+        guard let book, book.chapters.indices.contains(index) else { return nil }
+        let text = ChapterText(chapter: book.chapters[index])
+        chapterTexts[index] = text
+        return text
+    }
+
     /// Paginates the whole book for a page layout off the main thread, so pages can show
     /// "118 из 294". Uses exactly the renderer and paginator the pages use.
     func requestPageNumbering(layoutKey: String, pageSize: CGSize) {
@@ -406,22 +431,39 @@ final class ReaderModel {
 
     // MARK: Bookmarks
 
-    /// Chapter and display offset of a bookmark in the current book file.
+    /// Chapter and display offset of a bookmark in the current book file (cached per locator).
     func position(of bookmark: Bookmark) -> (chapter: Int, offset: Int)? {
-        guard let locator = try? Locator.fromJSONString(bookmark.locatorJSON), let service, let book,
+        let json = bookmark.locatorJSON
+        if let cached = bookmarkPositions[bookmark.id], cached.json == json {
+            return (cached.chapter, cached.offset)
+        }
+        guard let locator = try? Locator.fromJSONString(json), let service, let book,
               case let .caret(position) = service.resolve(locator),
               let chapter = book.chapterIndex(ofBlock: position.block),
-              let offset = rendered(chapter: chapter)?.text.utf16Offset(of: position) else { return nil }
+              let offset = chapterText(chapter)?.utf16Offset(of: position) else { return nil }
+        bookmarkPositions[bookmark.id] = (json: json, chapter: chapter, offset: offset)
         return (chapter, offset)
     }
 
-    /// The bookmark on the page (or screen) the reader sees now, if any.
+    /// The bookmark on the page (or screen) the reader sees now, if any. In scroll mode the
+    /// screen is the reader's current stretch of the tape: the icon fills while the bookmarked
+    /// line is on screen and empties once it has scrolled away.
     func bookmarkOnScreen(in bookmarks: [Bookmark]) -> Bookmark? {
         guard let visible = visibleRange else { return nil }
         return bookmarks.first { bookmark in
             guard let position = position(of: bookmark), position.chapter == visible.chapter else { return false }
             return position.offset >= visible.range.location && position.offset <= NSMaxRange(visible.range)
         }
+    }
+
+    /// Bookmark offsets in every chapter (marks in the margin of the scroll tape).
+    func bookmarkOffsets(_ bookmarks: [Bookmark]) -> [Int: [Int]] {
+        var result: [Int: [Int]] = [:]
+        for bookmark in bookmarks {
+            guard let position = position(of: bookmark) else { continue }
+            result[position.chapter, default: []].append(position.offset)
+        }
+        return result
     }
 
     /// Adds a bookmark at the first line on screen, or removes the one already there.

@@ -13,6 +13,8 @@ struct ContinuousBookView: UIViewControllerRepresentable {
     var highlights: [Highlight]
     /// Changes whenever anything that affects decorations changes (colour, thought, search hit).
     var decorationsToken: Int
+    /// Display offsets of bookmarks per chapter: ribbons in the margin of the tape.
+    var bookmarks: [Int: [Int]]
     var navigation: NavigationRequest?
     var actions: ReaderTextActions
 
@@ -22,7 +24,7 @@ struct ContinuousBookView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: ContinuousReaderController, context: Context) {
         controller.actions = actions
-        controller.update(style: style, highlights: highlights, decorationsToken: decorationsToken, navigation: navigation)
+        controller.update(style: style, highlights: highlights, decorationsToken: decorationsToken, navigation: navigation, bookmarks: bookmarks)
     }
 
     static func dismantleUIViewController(_ controller: ContinuousReaderController, coordinator: ()) {
@@ -57,10 +59,12 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
     private var highlights: [Highlight] = []
     private var decorationsToken = 0
     private var decorationCache: [Int: [HighlightDecoration]] = [:]
+    private var bookmarks: [Int: [Int]] = [:]
     private var handledNavigation: UUID?
     private var pendingNavigation: NavigationRequest?
     private var isAdjusting = false
-    private var reportedChapter: Int?
+    /// The stretch of the tape last reported to the model (top line and bottom line).
+    private var reportedVisible: (chapter: Int, start: Int, end: Int)?
 
     init(model: ReaderModel) {
         self.model = model
@@ -108,8 +112,14 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     // MARK: Updates from SwiftUI
 
-    func update(style newStyle: ReaderStyle, highlights newHighlights: [Highlight], decorationsToken token: Int, navigation: NavigationRequest?) {
+    func update(style newStyle: ReaderStyle, highlights newHighlights: [Highlight], decorationsToken token: Int, navigation: NavigationRequest?, bookmarks newBookmarks: [Int: [Int]] = [:]) {
         highlights = newHighlights
+        if newBookmarks != bookmarks {
+            bookmarks = newBookmarks
+            for case let cell as ChunkCell in tableView.visibleCells {
+                cell.bookmarkOffsets = bookmarkOffsets(in: cell.fragment.chapter, range: cell.fragment.range)
+            }
+        }
         if token != decorationsToken {
             decorationsToken = token
             decorationCache = [:]
@@ -163,6 +173,10 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         let result = model.decorations(for: highlights, chapter: chapter)
         decorationCache[chapter] = result
         return result
+    }
+
+    private func bookmarkOffsets(in chapter: Int, range: NSRange) -> [Int] {
+        (bookmarks[chapter] ?? []).filter { $0 >= range.location && $0 < NSMaxRange(range) }
     }
 
     private func row(at index: Int) -> (slot: Int, chunk: Int)? {
@@ -293,6 +307,11 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     /// End of what is visible, in the top line's chapter (for "is this screen bookmarked").
     private func visibleEnd(for top: (chapter: Int, offset: Int)) -> Int {
+        // Scrolled to the very end of the book: everything up to the last character is seen.
+        if let last = loaded.last, last.chapter == top.chapter, last.chapter == model.chapters.count - 1 {
+            let maxY = tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+            if tableView.contentOffset.y >= maxY - 2 { return NSMaxRange(last.ranges[last.ranges.count - 1]) }
+        }
         let bottomY = tableView.contentOffset.y + tableView.bounds.height - tableView.adjustedContentInset.bottom - 1
         if let bottom = position(atContentY: bottomY), bottom.chapter == top.chapter, bottom.offset >= top.offset {
             return bottom.offset
@@ -304,15 +323,19 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
     func reportPosition() {
         guard let position = currentPosition() else { return }
         let end = visibleEnd(for: position)
+        reportedVisible = (chapter: position.chapter, start: position.offset, end: end)
         DispatchQueue.main.async { [weak model] in
             model?.didScroll(chapter: position.chapter, utf16Offset: position.offset, visibleEnd: end, save: true)
         }
     }
 
-    private func reportChapterIfChanged() {
-        guard let position = currentPosition(), position.chapter != reportedChapter else { return }
-        reportedChapter = position.chapter
+    /// While scrolling: tells the model what is on screen whenever the top or bottom line
+    /// changes, so the bookmark icon and the chapter title follow the tape live.
+    private func reportVisibleIfChanged() {
+        guard let position = currentPosition() else { return }
         let end = visibleEnd(for: position)
+        if let last = reportedVisible, last.chapter == position.chapter, last.start == position.offset, last.end == end { return }
+        reportedVisible = (chapter: position.chapter, start: position.offset, end: end)
         DispatchQueue.main.async { [weak model] in
             model?.didScroll(chapter: position.chapter, utf16Offset: position.offset, visibleEnd: end, save: false)
         }
@@ -356,13 +379,14 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
             content: chapter.contents[ref.chunk],
             decorations: decorations(for: chapter.chapter)
         )
+        chunkCell.bookmarkOffsets = bookmarkOffsets(in: chapter.chapter, range: chapter.ranges[ref.chunk])
         return chunkCell
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isAdjusting else { return }
         loadNeighboursIfNeeded()
-        reportChapterIfChanged()
+        reportVisibleIfChanged()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -390,6 +414,12 @@ final class ChunkCell: UITableViewCell {
     var textWidth: CGFloat = 1 {
         didSet { setNeedsLayout() }
     }
+    /// Chapter offsets of bookmarks inside this chunk: a ribbon in the right margin at each line.
+    var bookmarkOffsets: [Int] = [] {
+        didSet { if bookmarkOffsets != oldValue { setNeedsLayout() } }
+    }
+    private var ribbons: [UIImageView] = []
+    private var ribbonColor: UIColor = .systemOrange
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -406,6 +436,8 @@ final class ChunkCell: UITableViewCell {
         backgroundColor = colors.background
         contentView.backgroundColor = colors.background
         fragment.apply(colors: colors)
+        ribbonColor = colors.accent
+        for ribbon in ribbons { ribbon.tintColor = colors.accent }
     }
 
     override func layoutSubviews() {
@@ -414,5 +446,34 @@ final class ChunkCell: UITableViewCell {
         // The table insets the content view to the safe area; centre the measured width in it.
         let left = ((contentView.bounds.width - textWidth) / 2).rounded(.down)
         fragment.textFrame = CGRect(x: left, y: Self.topPadding, width: textWidth, height: max(1, contentView.bounds.height - Self.topPadding))
+        layoutRibbons()
+    }
+
+    /// Visible ribbon frames (for tests).
+    var ribbonFrames: [CGRect] { ribbons.filter { !$0.isHidden }.map(\.frame) }
+
+    private func layoutRibbons() {
+        while ribbons.count < bookmarkOffsets.count {
+            let ribbon = UIImageView(image: UIImage(systemName: "bookmark.fill"))
+            ribbon.contentMode = .scaleAspectFit
+            ribbon.tintColor = ribbonColor
+            ribbon.isUserInteractionEnabled = false
+            ribbon.accessibilityLabel = "Закладка"
+            contentView.addSubview(ribbon)
+            ribbons.append(ribbon)
+        }
+        fragment.layoutIfNeeded()
+        let size = CGSize(width: 11, height: 15)
+        let textFrame = fragment.textFrame
+        let margin = contentView.bounds.width - textFrame.maxX
+        let x = margin >= size.width + 4 ? textFrame.maxX + ((margin - size.width) / 2).rounded() : contentView.bounds.width - size.width - 1
+        for (index, ribbon) in ribbons.enumerated() {
+            guard index < bookmarkOffsets.count, let line = fragment.lineFrame(ofChapterOffset: bookmarkOffsets[index]) else {
+                ribbon.isHidden = true
+                continue
+            }
+            ribbon.isHidden = false
+            ribbon.frame = CGRect(x: x, y: (line.midY - size.height / 2).rounded(), width: size.width, height: size.height)
+        }
     }
 }

@@ -134,4 +134,12 @@ public struct MaterialExport: Sendable {
         let permille = Int((max(0, min(1, progression)) * 1000).rounded())
         return "\(permille / 10),\(permille % 10) %"
     }
+
+    /// Reading progress in the reader: whole percent, rounded down, so "100 %" appears only
+    /// at the very end of the book (`atEnd`), never a page before it. 0.365 → "36 %".
+    public static func wholePercent(_ progression: Double, atEnd: Bool = false) -> String {
+        if atEnd || progression >= 1 { return "100 %" }
+        let percent = Int((max(0, progression) * 100 + 1e-9).rounded(.down))
+        return "\(min(99, percent)) %"
+    }
 }

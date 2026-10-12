@@ -34,6 +34,7 @@ enum DecorationPainter {
         storage.removeAttribute(.backgroundColor, range: whole)
         storage.removeAttribute(.underlineStyle, range: whole)
         storage.removeAttribute(.underlineColor, range: whole)
+        markNoteReferences(in: storage)
         for decoration in decorations {
             let local = NSRange(location: decoration.range.location - offset, length: decoration.range.length)
             let range = NSIntersectionRange(local, whole)
@@ -53,6 +54,21 @@ enum DecorationPainter {
             }
         }
         storage.endEditing()
+    }
+
+    /// Footnote numbers get a dotted underline in their own (accent) colour, as in Yandex Books,
+    /// so they read as tappable. Painted here because decorations reset underlines.
+    private static func markNoteReferences(in storage: NSTextStorage) {
+        var references: [NSRange] = []
+        storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            if let url = value as? URL, url.scheme == ChapterRenderer.noteScheme { references.append(range) }
+        }
+        for range in references {
+            storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue, range: range)
+            if let color = storage.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? UIColor {
+                storage.addAttribute(.underlineColor, value: color, range: range)
+            }
+        }
     }
 
     /// The highlight under a chapter offset, if any (search hits are not tappable).
@@ -105,11 +121,16 @@ enum ReaderEditMenu {
 }
 
 enum ReaderLinks {
-    /// Footnotes and internal references open inside the app; external links are not opened (offline app).
-    static func primaryAction(for textItem: UITextItem, defaultAction: UIAction, onTapLink: @escaping (URL) -> Void) -> UIAction? {
-        guard case let .link(url) = textItem.content else { return defaultAction }
-        guard url.scheme == ChapterRenderer.noteScheme || url.scheme == ChapterRenderer.linkScheme else { return nil }
-        return UIAction { _ in onTapLink(url) }
+    /// Links never act through the text view itself: footnotes and internal references are
+    /// opened by the fragment's own tap, which forgives near misses on tiny superscripts;
+    /// external links are not opened at all (offline app).
+    static func primaryAction(for textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
+        if case .link = textItem.content { return nil }
+        return defaultAction
+    }
+
+    static func isInternal(_ url: URL) -> Bool {
+        url.scheme == ChapterRenderer.noteScheme || url.scheme == ChapterRenderer.linkScheme
     }
 }
 

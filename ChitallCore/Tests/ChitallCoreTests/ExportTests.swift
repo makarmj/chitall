@@ -188,6 +188,15 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(MaterialExport.percent(1), "100,0 %")
     }
 
+    func testWholePercentForTheReader() {
+        XCTAssertEqual(MaterialExport.wholePercent(0.365), "36 %")
+        XCTAssertEqual(MaterialExport.wholePercent(0), "0 %")
+        XCTAssertEqual(MaterialExport.wholePercent(0.07), "7 %")
+        XCTAssertEqual(MaterialExport.wholePercent(0.999), "99 %", "a page before the end is not 100 %")
+        XCTAssertEqual(MaterialExport.wholePercent(0.97, atEnd: true), "100 %")
+        XCTAssertEqual(MaterialExport.wholePercent(1), "100 %")
+    }
+
     func testBooksAreGroupedAndSortedByTitle() throws {
         var items = try sampleItems()
         items[0].bookFingerprint = "sha256:other"

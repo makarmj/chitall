@@ -93,7 +93,11 @@ enum ChapterRenderer {
         if run.style.contains(.emphasis) { traits.insert(.traitItalic) }
         if run.style.contains(.strong) { traits.insert(.traitBold) }
         var size = look.size
-        if run.style.contains(.superscript) || run.isNoteReference {
+        if run.isNoteReference {
+            // A footnote number: a bit larger than plain superscript, so it is easy to see and hit.
+            size = look.size * 0.74
+            attributes[.baselineOffset] = look.size * 0.3
+        } else if run.style.contains(.superscript) {
             size = look.size * 0.68
             attributes[.baselineOffset] = look.size * 0.33
         } else if run.style.contains(.subscript_) {

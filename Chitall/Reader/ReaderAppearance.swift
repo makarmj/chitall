@@ -135,9 +135,9 @@ enum ReaderFont: String, CaseIterable, Identifiable {
         return UIFont(descriptor: styled, size: size)
     }
 
-    /// Font for the settings preview.
-    func previewFont(size: CGFloat) -> Font {
-        Font(font(size: size) as CTFont)
+    /// The book font in SwiftUI (settings preview, footnote card).
+    func previewFont(size: CGFloat, weight: UIFont.Weight = .regular) -> Font {
+        Font(font(size: size, weight: weight) as CTFont)
     }
 }
 
