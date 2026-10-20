@@ -88,9 +88,9 @@ final class ThoughtDictation {
     }
 
     private func listen(with recognizer: SFSpeechRecognizer) throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: .duckOthers)
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        let audio = AVAudioSession.sharedInstance()
+        try audio.setCategory(.record, mode: .measurement, options: .duckOthers)
+        try audio.setActive(true, options: .notifyOthersOnDeactivation)
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
