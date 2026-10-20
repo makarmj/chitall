@@ -57,6 +57,10 @@
 		<string>OpenDyslexic-Regular.otf</string>
 		<string>OpenDyslexic-Bold.otf</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен, чтобы надиктовать мысль к выделению. Речь распознаётся на iPhone и никуда не отправляется.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Распознавание речи превращает надиктованную мысль в текст. Оно идёт на iPhone, без интернета и серверов.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>

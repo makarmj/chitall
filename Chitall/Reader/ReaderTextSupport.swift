@@ -13,6 +13,8 @@ enum SelectionAction {
     /// Highlight in the last used colour and tag it at once, without opening the editor.
     case highlightWithTag(ChapterRange, String)
     case open(UUID)
+    /// "Значение": the selected word in the system dictionary (`LookupTerm`, already cleaned).
+    case lookUp(String)
 }
 
 /// Callbacks a text surface (the scrolling chapter or one page) sends to the reader screen.
@@ -81,8 +83,10 @@ enum ReaderEditMenu {
     /// Our actions first, then the system ones (Copy, Look Up, Translate, Share) as provided.
     /// - Parameters:
     ///   - selection: the selected range in chapter coordinates.
+    ///   - selectedText: its characters; a word or a short phrase gets "Значение".
     static func make(
         for selection: ChapterRange,
+        selectedText: String = "",
         decorations: [HighlightDecoration],
         quickTags: [String] = [],
         suggestedActions: [UIMenuElement],
@@ -102,6 +106,12 @@ enum ReaderEditMenu {
                 clearSelection()
             },
         ]
+        // Right after the highlight actions, so a long press on a word shows it without scrolling the menu.
+        if let term = LookupTerm.make(from: selectedText) {
+            items.append(UIAction(title: "Значение", image: UIImage(systemName: "character.book.closed")) { _ in
+                perform(.lookUp(term))
+            })
+        }
         if !quickTags.isEmpty {
             let tagActions = quickTags.prefix(10).map { tag in
                 UIAction(title: TagNames.display(tag)) { _ in

@@ -197,6 +197,11 @@ def check_plists():
             fail(f"Info.plist: UIAppFonts lists {font}, but Chitall/Resources/Fonts/{font} is missing")
     if info.get("UIAppFonts") and not any(fonts.glob("*OFL*.txt")):
         fail("bundled fonts need their licence text next to them")
+    # "Мысль голосом": iOS terminates an app that asks for the microphone or speech recognition
+    # without saying why.
+    for key in ("NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"):
+        if not str(info.get(key, "")).strip():
+            fail(f"Info.plist: {key} is missing (the dictation would crash the app)")
     privacy = plistlib.loads((ROOT / "Chitall" / "Resources" / "PrivacyInfo.xcprivacy").read_bytes())
     if privacy.get("NSPrivacyTracking") is not False:
         fail("PrivacyInfo: tracking must be false")

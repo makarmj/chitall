@@ -327,7 +327,6 @@ struct ReaderSettingsView: View {
     @AppStorage(ReaderPreferences.focusRulerKey) private var focusRuler = false
     @AppStorage(ReaderPreferences.cleanScreenKey) private var cleanScreen = false
     @AppStorage(ReaderPreferences.resumeCardKey) private var resumeCard = true
-    @AppStorage(ReaderPreferences.sessionMinutesKey) private var sessionMinutes = 0
 
     var body: some View {
         ScrollView {
@@ -349,9 +348,7 @@ struct ReaderSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text(modeRaw == ReadingMode.pages.rawValue
-                     ? "Страницы: тап у правого края — вперёд, у левого — назад, в центре — панели. Свайп тоже листает."
-                     : "Прокрутка: вся книга одной лентой, главы идут подряд. Закладка отмечает строку вверху экрана: значок заполнен, пока она на экране, а сами закладки видны на полях и над ползунком.")
+                Text(modeHint)
                     .font(.caption)
                     .foregroundStyle(secondary)
                 concentrationSection
@@ -361,6 +358,17 @@ struct ReaderSettingsView: View {
         .foregroundStyle(ink)
         .tint(accent)
         .environment(\.colorScheme, isDark ? .dark : .light)
+    }
+
+    private var modeHint: String {
+        switch ReadingMode(rawValue: modeRaw) ?? .pages {
+        case .pages:
+            return "Страницы: тап у правого края — вперёд, у левого — назад, в центре — панели. Свайп тоже листает."
+        case .scroll:
+            return "Прокрутка: вся книга одной лентой, главы идут подряд. Закладка отмечает строку вверху экрана: значок заполнен, пока она на экране, а сами закладки видны на полях и над ползунком."
+        case .paragraph:
+            return "По абзацу: на экране только один абзац, крупнее обычного. Тап у правого края или свайп влево — следующий, у левого края или свайп вправо — предыдущий. Для дней, когда трудно сосредоточиться."
+        }
     }
 
     private var ink: Color { Color(uiColor: colors.text) }
@@ -452,16 +460,9 @@ struct ReaderSettingsView: View {
                 "Где я остановился", isOn: $resumeCard,
                 hint: "При открытии книги — последние прочитанные строки и последнее выделение."
             )
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Напомнить о паузе")
-                Picker("Напомнить о паузе", selection: $sessionMinutes) {
-                    Text("Нет").tag(0)
-                    Text("10 мин").tag(10)
-                    Text("15 мин").tag(15)
-                    Text("20 мин").tag(20)
-                    Text("30 мин").tag(30)
-                }
-                .pickerStyle(.segmented)
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Напомнить о паузе — кнопка с таймером на нижней панели книги", systemImage: "timer")
+                    .font(.subheadline)
                 Text("Тихая карточка в книге, без звука и уведомлений. Время до конца главы считается по вашему темпу чтения.")
                     .font(.caption)
                     .foregroundStyle(secondary)

@@ -36,9 +36,11 @@ struct ReaderView: View {
     @State private var scrubValue: Double?
     /// Brightness chosen in the reader; `nil` while untouched (the system value stays).
     @State private var brightness: Double?
-    /// When the current reading session ends (the pause reminder), `nil` without one.
-    @State private var sessionEnd: Date?
     @State private var showsSessionBanner = false
+    /// "Значение" without an entry: the card that explains where to get the dictionary.
+    @State private var missingDefinition: DictionaryLookup.Request?
+    /// Opened once the card above has gone away.
+    @State private var dictionaryAfterCard: String?
 
     private let initialHighlightID: UUID?
 
@@ -64,7 +66,8 @@ struct ReaderView: View {
 
     private var style: ReaderStyle {
         ReaderStyle(
-            fontSize: CGFloat(fontSize),
+            // The paragraph mode shows one paragraph at a time, so it can afford larger type.
+            fontSize: CGFloat(mode == .paragraph ? min(fontSize * ReadingMode.paragraphScale, 40) : fontSize),
             lineSpacing: (ReaderSpacing(rawValue: spacingRaw) ?? .normal).lineHeightMultiple,
             font: ReaderFont(rawValue: fontRaw) ?? .sourceSerif,
             theme: theme,
@@ -152,6 +155,17 @@ struct ReaderView: View {
                         focusRuler: focusRuler
                     )
                     .ignoresSafeArea()
+                case .paragraph:
+                    ParagraphBookView(
+                        model: model,
+                        style: model.style,
+                        decorations: model.decorationsAroundCurrentChapter(for: highlights),
+                        bookmarks: model.bookmarkOffsetsAroundCurrentChapter(bookmarks),
+                        navigation: model.navigation,
+                        actions: textActions,
+                        cleanScreen: cleanScreen
+                    )
+                    .ignoresSafeArea()
                 }
             }
         }
@@ -190,7 +204,7 @@ struct ReaderView: View {
         }
         // In page mode the status bar stays: hiding it would change the page size and reflow the book.
         // "Чистый экран" hides it for good, so the page size stays the same there too.
-        .statusBarHidden(cleanScreen || (mode == .scroll && !model.chromeVisible))
+        .statusBarHidden(cleanScreen || (mode != .pages && !model.chromeVisible))
         .preferredColorScheme(preferredScheme)
         .task {
             let initial = initialHighlightID.flatMap { id in highlights.first { $0.id == id } }
@@ -206,10 +220,10 @@ struct ReaderView: View {
         }
         .onChange(of: model.isReady) { if model.isReady { startSession() } }
         .onChange(of: sessionMinutes) { startSession() }
-        .task(id: sessionEnd) {
-            guard let end = sessionEnd else { return }
+        .task(id: model.pauseTimer.end) {
+            guard let end = model.pauseTimer.end else { return }
             try? await Task.sleep(for: .seconds(max(0, end.timeIntervalSinceNow)))
-            guard !Task.isCancelled, sessionEnd == end else { return }
+            guard !Task.isCancelled, model.pauseTimer.end == end else { return }
             withAnimation { showsSessionBanner = true }
         }
         .onChange(of: modeRaw) { model.navigateToCurrentPosition() }
@@ -233,6 +247,14 @@ struct ReaderView: View {
                 highlightToDelete = highlight
                 editingHighlight = nil
             })
+        }
+        .sheet(item: $missingDefinition, onDismiss: {
+            if let term = dictionaryAfterCard {
+                dictionaryAfterCard = nil
+                DictionaryLookup.present(term)
+            }
+        }) { request in
+            MissingDictionaryCard(term: request.term, colors: colors) { dictionaryAfterCard = request.term }
         }
         .sheet(item: $shownNote) { note in
             NoteCard(note: note, style: model.style)
@@ -382,6 +404,8 @@ struct ReaderView: View {
                 Spacer()
                 bookmarkButton
                 Spacer()
+                pauseTimerButton
+                Spacer()
                 toolbarButton("textformat.size", "Оформление") { showsSettings = true }
                 Spacer()
                 toolbarButton("magnifyingglass", "Поиск по книге") { showsSearch = true }
@@ -422,6 +446,51 @@ struct ReaderView: View {
         .foregroundStyle(Color(uiColor: marked ? colors.accent : colors.text))
     }
 
+    /// "Напомнить о паузе" right on the panel (it used to hide at the bottom of "Оформление"):
+    /// pick 10–30 minutes, see what is left next to the icon, turn it off. The choice is kept and
+    /// starts again in the next book.
+    private var pauseTimerButton: some View {
+        Menu {
+            if model.pauseTimer.isOn {
+                Section(model.pauseTimer.statusLabel(at: .now)) {
+                    Button { startSession() } label: { Label("Начать заново", systemImage: "arrow.counterclockwise") }
+                    Button(role: .destructive) { sessionMinutes = 0 } label: { Label("Выключить", systemImage: "xmark") }
+                }
+            }
+            Section("Напомнить о паузе через") {
+                ForEach(PauseTimer.choices, id: \.self) { minutes in
+                    Button {
+                        sessionMinutes = minutes
+                        startSession() // also when the same length is picked again
+                    } label: {
+                        if minutes == sessionMinutes, model.pauseTimer.isOn {
+                            Label("\(minutes) мин", systemImage: "checkmark")
+                        } else {
+                            Text("\(minutes) мин")
+                        }
+                    }
+                }
+            }
+        } label: {
+            TimelineView(.periodic(from: .now, by: 15)) { context in
+                HStack(spacing: 4) {
+                    Image(systemName: "timer").font(.title3)
+                    if let left = model.pauseTimer.shortLabel(at: context.date) {
+                        Text(left)
+                            .font(.footnote.weight(.semibold))
+                            .monospacedDigit()
+                            .fixedSize()
+                    }
+                }
+                .frame(minWidth: 44, minHeight: 40)
+                .foregroundStyle(Color(uiColor: model.pauseTimer.isOn ? colors.accent : colors.text))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(model.pauseTimer.statusLabel(at: context.date))
+            }
+        }
+        .accessibilityHint("Напомнить о паузе")
+    }
+
     private func toolbarButton(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
@@ -437,6 +506,9 @@ struct ReaderView: View {
             let left = status.pageCount - status.page - 1
             return left > 0 ? "ещё \(left) стр. в главе" : "последняя стр. главы"
         }
+        if mode == .paragraph, let status = model.pageStatus, status.chapter == model.chapterIndex {
+            return "абзац \(status.page + 1) из \(status.pageCount)"
+        }
         return model.currentChapter?.title ?? ""
     }
 
@@ -447,7 +519,7 @@ struct ReaderView: View {
             return "\(MaterialExport.wholePercent(value)) · \(chapter)"
         }
         let percent = "\(model.progressPercent) от всей книги"
-        if mode == .scroll, let left = model.chapterTimeLeft {
+        if mode != .pages, let left = model.chapterTimeLeft {
             return "\(model.progressPercent) · \(left)"
         }
         if mode == .pages, let status = model.pageStatus, let numbering = model.pageNumbering,
@@ -477,7 +549,7 @@ struct ReaderView: View {
     /// Starts (or restarts) the reading session for the pause reminder.
     private func startSession() {
         showsSessionBanner = false
-        sessionEnd = sessionMinutes > 0 ? Date.now.addingTimeInterval(Double(sessionMinutes) * 60) : nil
+        model.startPauseTimer(minutes: sessionMinutes)
     }
 
     private func handle(_ action: SelectionAction) {
@@ -493,6 +565,13 @@ struct ReaderView: View {
             _ = model.createHighlight(for: selection, color: color, tags: [tag], context: context)
         case let .open(id):
             editingHighlight = highlights.first { $0.id == id }
+        case let .lookUp(term):
+            let request = DictionaryLookup.request(for: term)
+            if request.found {
+                DictionaryLookup.present(request.term)
+            } else {
+                missingDefinition = request
+            }
         }
     }
 

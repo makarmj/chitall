@@ -38,6 +38,7 @@ struct HighlightEditorContent: View {
     @Query(sort: [SortDescriptor(\TagRecord.sortOrder), SortDescriptor(\TagRecord.name)]) private var catalog: [TagRecord]
     @State private var newTag = ""
     @State private var confirmsDeletion = false
+    @State private var dictation = ThoughtDictation()
     @FocusState private var noteFocused: Bool
 
     private var tagNames: [String] {
@@ -74,6 +75,7 @@ struct HighlightEditorContent: View {
                 }
 
                 section("Мысль") {
+                    DictationButton(dictation: dictation, note: highlight.note)
                     TextEditor(text: $highlight.note)
                         .focused($noteFocused)
                         .font(Typography.serif(.body))
@@ -133,6 +135,13 @@ struct HighlightEditorContent: View {
             .padding(20)
         }
         .background(Palette.background)
+        .onAppear {
+            dictation.onText = { [highlight] text in
+                highlight.note = text
+                highlight.touch()
+            }
+        }
+        .onDisappear { dictation.stop() }
         .confirmationDialog("Удалить выделение?", isPresented: $confirmsDeletion, titleVisibility: .visible) {
             Button("Удалить", role: .destructive, action: onDelete)
             Button("Отмена", role: .cancel) {}

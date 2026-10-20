@@ -34,6 +34,8 @@ struct HighlightDecoration: Equatable {
 enum ReadingMode: String, CaseIterable, Identifiable {
     case pages
     case scroll
+    /// One paragraph at a time, larger, the next one by a tap or a swipe (DECISIONS.md §20).
+    case paragraph
 
     var id: String { rawValue }
 
@@ -41,8 +43,12 @@ enum ReadingMode: String, CaseIterable, Identifiable {
         switch self {
         case .pages: return "Страницы"
         case .scroll: return "Прокрутка"
+        case .paragraph: return "По абзацу"
         }
     }
+
+    /// The paragraph mode sets its text this much larger than the chosen size.
+    static let paragraphScale: Double = 1.25
 }
 
 /// State of an open book: the parsed model, the current chapter and the bridge between
@@ -83,6 +89,8 @@ final class ReaderModel {
     private(set) var pace: ReadingPace
     /// The last words read before the saved place, shown once when the book reopens there.
     private(set) var resumeSnippet: String?
+    /// "Напомнить о паузе": the current stretch of reading (the bottom panel shows what is left).
+    private(set) var pauseTimer = PauseTimer()
     /// The query of the search sheet, kept while the book is open.
     @ObservationIgnored var lastSearchQuery = ""
 
@@ -98,6 +106,7 @@ final class ReaderModel {
     @ObservationIgnored private var chapterTexts: [Int: ChapterText] = [:]
     @ObservationIgnored private var lastPosition: (chapter: Int, utf16: Int)?
     @ObservationIgnored private var wordIndexes: [Int: WordIndex] = [:]
+    @ObservationIgnored private var stepCache: [Int: ParagraphSteps] = [:]
     /// Where and when the current stretch of reading started (for the pace).
     @ObservationIgnored private var paceAnchor: (chapter: Int, offset: Int, time: Date)?
     @ObservationIgnored private let defaults: UserDefaults
@@ -261,7 +270,8 @@ final class ReaderModel {
 
     // MARK: Position reports from the views
 
-    /// Page mode: the user turned to another page (possibly in another chapter).
+    /// Page mode (and the paragraph mode, a paragraph being its page): the user turned to
+    /// another page, possibly in another chapter.
     func didShowPage(chapter: Int, page: Int, pageCount: Int, firstOffset: Int, endOffset: Int) {
         if chapter != chapterIndex { chapterIndex = chapter }
         let status = PageStatus(chapter: chapter, page: page, pageCount: pageCount)
@@ -281,6 +291,11 @@ final class ReaderModel {
     /// A page turn or a drag by the reader (not a jump from the contents or the slider).
     func userDidMove() {
         userMoves &+= 1
+    }
+
+    /// Starts a new stretch of reading for the pause reminder; 0 turns it off.
+    func startPauseTimer(minutes: Int) {
+        pauseTimer.start(minutes: minutes, at: now())
     }
 
     func dismissResume() {
@@ -331,6 +346,15 @@ final class ReaderModel {
     /// Whole percent of the book read, "100 %" only at the very end.
     var progressPercent: String {
         MaterialExport.wholePercent(storedBook.readingProgress, atEnd: isAtEnd)
+    }
+
+    /// The screens of the paragraph mode in a chapter (they do not depend on the typography).
+    func paragraphSteps(chapter: Int) -> ParagraphSteps? {
+        if let cached = stepCache[chapter] { return cached }
+        guard let text = chapterText(chapter) else { return nil }
+        let steps = ParagraphSteps(text)
+        stepCache[chapter] = steps
+        return steps
     }
 
     /// The character map of a chapter without rendering it (cheap, cached).

@@ -195,8 +195,11 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             chapter: chapter,
             range: NSRange(location: localRange.location + range.location, length: localRange.length)
         )
+        let selectedText = (textView.text as NSString?)
+            .map { NSMaxRange(localRange) <= $0.length ? $0.substring(with: localRange) : "" } ?? ""
         return ReaderEditMenu.make(
             for: selection,
+            selectedText: selectedText,
             decorations: decorations,
             quickTags: actions.quickTags,
             suggestedActions: suggestedActions,

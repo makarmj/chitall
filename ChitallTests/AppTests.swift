@@ -10,6 +10,8 @@ import XCTest
 @MainActor
 final class AppTests: XCTestCase {
     private var temporaryRoot: URL!
+    /// In-memory stores of the tests' books, alive until the test ends.
+    private var retainedContainers: [ModelContainer] = []
 
     override func setUpWithError() throws {
         temporaryRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -829,5 +831,182 @@ final class AppTests: XCTestCase {
         let label = controller.pageLabel(for: PageLocation(chapter: 1, page: 0), pageCount: 3, range: NSRange(location: 0, length: 10))
         XCTAssertTrue(label.hasPrefix("1 / 3 · ≈ "), label)
         XCTAssertTrue(label.hasSuffix("мин до конца главы"), label)
+    }
+
+    // MARK: Reading and words (iteration 5)
+
+    private func openSample() async throws -> (ReaderModel, ModelContext) {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        retainedContainers.append(container)
+        let context = container.mainContext
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: context) else {
+            throw XCTSkip("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        return (model, context)
+    }
+
+    func testPauseTimerOnThePanelCountsDownAndTurnsOff() async throws {
+        let (model, _) = try await openSample()
+        var clock = Date(timeIntervalSince1970: 2_000_000)
+        model.now = { clock }
+        XCTAssertFalse(model.pauseTimer.isOn, "off until the reader picks a length")
+
+        model.startPauseTimer(minutes: 15)
+        XCTAssertEqual(model.pauseTimer.shortLabel(at: clock), "15 мин")
+        XCTAssertEqual(model.pauseTimer.end, clock + 15 * 60)
+        clock += 5 * 60 + 10
+        XCTAssertEqual(model.pauseTimer.shortLabel(at: clock), "10 мин", "what is left shows next to the icon")
+        XCTAssertEqual(model.pauseTimer.statusLabel(at: clock), "Пауза через 10 мин")
+
+        // "Ещё 15 мин" / "Начать заново": a new stretch from now.
+        model.startPauseTimer(minutes: 15)
+        XCTAssertEqual(model.pauseTimer.end, clock + 15 * 60)
+        XCTAssertTrue(model.pauseTimer.isDue(at: clock + 15 * 60))
+
+        model.startPauseTimer(minutes: 0) // "Выключить"
+        XCTAssertFalse(model.pauseTimer.isOn)
+        XCTAssertNil(model.pauseTimer.shortLabel(at: clock))
+    }
+
+    func testSelectionMenuOffersTheMeaningOfAWord() throws {
+        func titles(_ selectedText: String) -> [String] {
+            ReaderEditMenu.make(
+                for: ChapterRange(chapter: 1, range: NSRange(location: 0, length: selectedText.utf16.count)),
+                selectedText: selectedText,
+                decorations: [],
+                suggestedActions: [],
+                perform: { _ in },
+                clearSelection: {}
+            ).children.map { ($0 as? UIAction)?.title ?? ($0 as? UIMenu)?.title ?? "" }
+        }
+        let word = titles("«Казённую».")
+        XCTAssertEqual(Array(word.prefix(3)), ["Выделить", "Мысль…", "Значение"], "visible right away after a long press on a word")
+        XCTAssertFalse(titles("Стражник был молод, в тулупе с чужого плеча.").contains("Значение"), "a sentence is not looked up")
+
+        // The system dictionary: "Казённую" at the start of a sentence is found as "казённую".
+        let found = DictionaryLookup.request(for: "Казённую") { $0 == "казённую" }
+        XCTAssertTrue(found.found)
+        XCTAssertEqual(found.term, "казённую")
+        let exact = DictionaryLookup.request(for: "Бережск") { $0 == "Бережск" }
+        XCTAssertEqual(exact.term, "Бережск")
+        // No Russian dictionary on the phone: the card that says where to download it.
+        let missing = DictionaryLookup.request(for: "пищаль") { _ in false }
+        XCTAssertFalse(missing.found)
+        XCTAssertEqual(missing.term, "пищаль")
+    }
+
+    func testParagraphModeShowsOneParagraphAndGoesOnThroughTheBook() async throws {
+        let (model, _) = try await openSample()
+        let controller = ParagraphReaderController(model: model)
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        controller.view.layoutIfNeeded()
+        model.show(chapter: 1)
+        controller.update(style: model.style, decorations: [:], bookmarks: [:], navigation: model.navigation)
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100)) // position reports arrive asynchronously
+
+        let steps = try XCTUnwrap(model.paragraphSteps(chapter: 1))
+        XCTAssertGreaterThan(steps.count, 3)
+        let text = try XCTUnwrap(model.rendered(chapter: 1)).text.string as NSString
+        func expected(_ step: Int) -> NSRange {
+            NSRange(location: steps.ranges[step].lowerBound, length: steps.ranges[step].count)
+        }
+        XCTAssertEqual(controller.shownRange, expected(0))
+        XCTAssertEqual(controller.fragment.textView.text, text.substring(with: expected(0)), "only this paragraph is on screen")
+        XCTAssertEqual(model.visibleRange, ChapterRange(chapter: 1, range: expected(0)))
+        XCTAssertTrue(controller.footerLabel().hasPrefix("абзац 1 из \(steps.count)"), controller.footerLabel())
+
+        // Next by a tap or a swipe: the reading position follows and the reader's move is counted.
+        let moves = model.userMoves
+        controller.turn(forward: true)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(controller.shownRange, expected(1))
+        XCTAssertEqual(model.userMoves, moves + 1)
+        XCTAssertEqual(model.visibleRange, ChapterRange(chapter: 1, range: expected(1)))
+        XCTAssertNotNil(model.storedBook.readingPositionJSON, "the reading position is saved as in the other modes")
+
+        // On through the end of the chapter into the next one, and back.
+        for _ in 1..<steps.count { controller.turn(forward: true) }
+        XCTAssertEqual(controller.location, PageLocation(chapter: 2, page: 0))
+        controller.turn(forward: false)
+        XCTAssertEqual(controller.location, PageLocation(chapter: 1, page: steps.count - 1))
+
+        // A jump (contents, search, slider) opens the paragraph that holds the place.
+        let place = text.range(of: "Стражник был молод")
+        model.saveReadingPosition(chapter: 1, atUTF16: place.location + 20)
+        model.navigateToCurrentPosition()
+        controller.update(style: model.style, decorations: [:], bookmarks: [:], navigation: model.navigation)
+        XCTAssertEqual(controller.location?.page, steps.index(containing: place.location + 20))
+        XCTAssertEqual(controller.shownRange?.location, place.location, "the paragraph starts at its first word")
+        XCTAssertGreaterThan(ReadingMode.paragraphScale, 1, "larger type than the chosen size")
+    }
+
+    func testParagraphModeKeepsHighlightsThoughtsAndBookmarks() async throws {
+        let (model, context) = try await openSample()
+        let controller = ParagraphReaderController(model: model)
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        controller.view.layoutIfNeeded()
+        let chapterText = try XCTUnwrap(model.rendered(chapter: 1)).text
+        let text = chapterText.string as NSString
+        let place = text.range(of: "Стражник был молод")
+        model.show(chapter: 1, at: chapterText.position(atUTF16: place.location, forward: true))
+        controller.update(style: model.style, decorations: [:], bookmarks: [:], navigation: model.navigation)
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let shown = try XCTUnwrap(controller.shownRange)
+        XCTAssertEqual(shown.location, place.location)
+
+        // A selection on the paragraph screen is in chapter coordinates: an ordinary highlight.
+        let word = text.range(of: "тулупе")
+        let highlight = try XCTUnwrap(model.createHighlight(for: ChapterRange(chapter: 1, range: word), color: .ochre, context: context))
+        highlight.note = "Чужой тулуп — новобранец."
+        XCTAssertEqual(highlight.text, "тулупе")
+        controller.update(style: model.style, decorations: model.decorationsAroundCurrentChapter(for: [highlight]), bookmarks: [:], navigation: model.navigation)
+        let storage = controller.fragment.textView.textStorage
+        XCTAssertNotNil(storage.attribute(.backgroundColor, at: word.location - shown.location, effectiveRange: nil), "the highlight is painted")
+        XCTAssertNotNil(storage.attribute(.underlineStyle, at: word.location - shown.location, effectiveRange: nil), "its thought is marked")
+
+        // A bookmark marks this paragraph; the icon fills while it is on screen.
+        model.toggleBookmark(in: [], context: context)
+        let bookmarks = try context.fetch(FetchDescriptor<Bookmark>())
+        let bookmark = try XCTUnwrap(bookmarks.first)
+        XCTAssertTrue(model.bookmarkOnScreen(in: bookmarks) === bookmark)
+        controller.update(style: model.style, decorations: [:], bookmarks: model.bookmarkOffsetsAroundCurrentChapter(bookmarks), navigation: model.navigation)
+        XCTAssertTrue(controller.isBookmarkShown)
+        controller.turn(forward: true)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(controller.isBookmarkShown)
+        XCTAssertNil(model.bookmarkOnScreen(in: bookmarks))
+        model.go(to: bookmark)
+        controller.update(style: model.style, decorations: [:], bookmarks: model.bookmarkOffsetsAroundCurrentChapter(bookmarks), navigation: model.navigation)
+        XCTAssertEqual(controller.shownRange, shown, "the bookmark opens its paragraph")
+        XCTAssertTrue(controller.isBookmarkShown)
+    }
+
+    func testThoughtByVoiceAddsToTheThoughtAndExplainsItself() throws {
+        // iOS ends an app that uses the microphone or speech recognition without saying why.
+        for key in ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"] {
+            let reason = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: key) as? String, key)
+            XCTAssertTrue(reason.contains("iPhone"), "says that the voice stays on the phone: \(reason)")
+        }
+
+        var thought = ""
+        let dictation = ThoughtDictation()
+        dictation.onText = { thought = $0 }
+        dictation.begin(with: "Ефим молчит")
+        for partial in ["потому", "потому что", "потому что боится досмотра"] {
+            dictation.receive(partial)
+        }
+        XCTAssertEqual(thought, "Ефим молчит. Потому что боится досмотра", "what was written stays, the words are added once")
+        XCTAssertEqual(dictation.state, .idle)
+        XCTAssertFalse(dictation.isListening)
+
+        // No recognizer for Russian: an honest hint instead of a server.
+        let reason = try XCTUnwrap(ThoughtDictation.unavailableReason(nil))
+        XCTAssertTrue(reason.contains("клавиатуре"), reason)
+        XCTAssertEqual(ThoughtDictation.locale.identifier, "ru-RU")
     }
 }
