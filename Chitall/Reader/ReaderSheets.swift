@@ -322,18 +322,26 @@ struct ReaderSettingsView: View {
     @AppStorage(ReaderPreferences.justifiedKey) private var justified = true
     @AppStorage(ReaderPreferences.readerThemeKey) private var themeRaw = ReaderTheme.system.rawValue
     @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
+    @AppStorage(ReaderPreferences.letterSpacingKey) private var letterSpacingRaw = ReaderLetterSpacing.normal.rawValue
+    @AppStorage(ReaderPreferences.easyReadingPreviousKey) private var easyReadingPrevious = ""
+    @AppStorage(ReaderPreferences.focusRulerKey) private var focusRuler = false
+    @AppStorage(ReaderPreferences.cleanScreenKey) private var cleanScreen = false
+    @AppStorage(ReaderPreferences.resumeCardKey) private var resumeCard = true
+    @AppStorage(ReaderPreferences.sessionMinutesKey) private var sessionMinutes = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 brightnessRow
+                easyReadingRow
                 themeRow
                 fontRow
-                HStack(spacing: 28) {
+                HStack(spacing: 20) {
                     spacingRow
                     Spacer(minLength: 0)
                     marginsRow
                 }
+                letterSpacingRow
                 Toggle("По ширине, с переносами", isOn: $justified)
                 Picker("Режим чтения", selection: $modeRaw) {
                     ForEach(ReadingMode.allCases) { mode in
@@ -346,6 +354,7 @@ struct ReaderSettingsView: View {
                      : "Прокрутка: вся книга одной лентой, главы идут подряд. Закладка отмечает строку вверху экрана: значок заполнен, пока она на экране, а сами закладки видны на полях и над ползунком.")
                     .font(.caption)
                     .foregroundStyle(secondary)
+                concentrationSection
             }
             .padding(22)
         }
@@ -358,6 +367,117 @@ struct ReaderSettingsView: View {
     private var secondary: Color { Color(uiColor: colors.secondary) }
     private var accent: Color { Color(uiColor: colors.accent) }
     private var outline: Color { Color(uiColor: colors.secondary).opacity(0.45) }
+
+    // MARK: Easy reading
+
+    private var easySettings: EasyReading.Settings {
+        EasyReading.Settings(
+            justified: justified,
+            letterSpacing: ReaderLetterSpacing(rawValue: letterSpacingRaw) ?? .normal,
+            spacing: ReaderSpacing(rawValue: spacingRaw) ?? .normal,
+            theme: ReaderTheme(rawValue: themeRaw) ?? .system
+        )
+    }
+
+    private func apply(_ settings: EasyReading.Settings) {
+        justified = settings.justified
+        letterSpacingRaw = settings.letterSpacing.rawValue
+        spacingRaw = settings.spacing.rawValue
+        themeRaw = settings.theme.rawValue
+    }
+
+    private var easyReading: Binding<Bool> {
+        Binding(
+            get: { EasyReading.isOn(easySettings) },
+            set: { on in
+                if on {
+                    easyReadingPrevious = EasyReading.encode(easySettings)
+                    apply(EasyReading.applied(to: easySettings))
+                } else {
+                    apply(EasyReading.restored(from: EasyReading.decode(easyReadingPrevious), current: easySettings))
+                }
+            }
+        )
+    }
+
+    private var easyReadingRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: easyReading) {
+                Label("Лёгкое чтение", systemImage: "eyeglasses")
+                    .font(.body.weight(.semibold))
+            }
+            Text("Шире буквы и строки, текст по левому краю без переносов, мягкий фон. Каждую часть можно подстроить ниже; шрифты Andika и OpenDyslexic — в ряду шрифтов.")
+                .font(.caption)
+                .foregroundStyle(secondary)
+        }
+    }
+
+    private var letterSpacingRow: some View {
+        HStack(spacing: 6) {
+            Text("Между буквами")
+                .font(.subheadline)
+            Spacer(minLength: 8)
+            ForEach(ReaderLetterSpacing.allCases) { spacing in
+                let selected = letterSpacingRaw == spacing.rawValue
+                Button {
+                    letterSpacingRaw = spacing.rawValue
+                } label: {
+                    LetterSpacingIcon(spacing: spacing)
+                        .foregroundStyle(selected ? accent : ink)
+                        .frame(minWidth: 44, minHeight: 34)
+                        .opacity(selected ? 1 : 0.55)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(spacing.title)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+    }
+
+    private var concentrationSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Внимание")
+                .font(.headline)
+            optionToggle(
+                "Линейка фокуса", isOn: $focusRuler,
+                hint: modeRaw == ReadingMode.scroll.rawValue
+                    ? "Абзац у линии чтения ярче, остальное приглушено. Линейка идёт за прокруткой."
+                    : "Работает в режиме «Прокрутка»: абзац у линии чтения ярче, остальное приглушено."
+            )
+            optionToggle(
+                "Чистый экран", isOn: $cleanScreen,
+                hint: "Панели прячутся, как только вы листаете; тап в центр — показать. Без названия главы над текстом и строки статуса."
+            )
+            optionToggle(
+                "Где я остановился", isOn: $resumeCard,
+                hint: "При открытии книги — последние прочитанные строки и последнее выделение."
+            )
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Напомнить о паузе")
+                Picker("Напомнить о паузе", selection: $sessionMinutes) {
+                    Text("Нет").tag(0)
+                    Text("10 мин").tag(10)
+                    Text("15 мин").tag(15)
+                    Text("20 мин").tag(20)
+                    Text("30 мин").tag(30)
+                }
+                .pickerStyle(.segmented)
+                Text("Тихая карточка в книге, без звука и уведомлений. Время до конца главы считается по вашему темпу чтения.")
+                    .font(.caption)
+                    .foregroundStyle(secondary)
+            }
+        }
+        .padding(.top, 6)
+    }
+
+    private func optionToggle(_ title: String, isOn: Binding<Bool>, hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(title, isOn: isOn)
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(secondary)
+        }
+    }
 
     private var brightnessRow: some View {
         HStack(spacing: 14) {
@@ -404,7 +524,7 @@ struct ReaderSettingsView: View {
         HStack(spacing: 16) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(ReaderFont.available) { font in
+                    ForEach(fontOrder) { font in
                         let selected = fontRaw == font.rawValue
                         Button {
                             fontRaw = font.rawValue
@@ -442,6 +562,13 @@ struct ReaderSettingsView: View {
         }
     }
 
+    /// With easy reading on, its fonts come first in the row.
+    private var fontOrder: [ReaderFont] {
+        let fonts = ReaderFont.available
+        guard EasyReading.isOn(easySettings) else { return fonts }
+        return fonts.filter(\.isEasyReadingFont) + fonts.filter { !$0.isEasyReadingFont }
+    }
+
     private var spacingRow: some View {
         HStack(spacing: 6) {
             ForEach(ReaderSpacing.allCases) { spacing in
@@ -449,9 +576,9 @@ struct ReaderSettingsView: View {
                 Button {
                     spacingRaw = spacing.rawValue
                 } label: {
-                    LinesIcon(gap: spacing == .compact ? 3 : spacing == .normal ? 5 : 7)
+                    LinesIcon(gap: spacing == .compact ? 3 : spacing == .normal ? 5 : spacing == .relaxed ? 7 : 9)
                         .foregroundStyle(selected ? accent : ink)
-                        .frame(width: 40, height: 34)
+                        .frame(width: 36, height: 34)
                         .opacity(selected ? 1 : 0.55)
                 }
                 .buttonStyle(.plain)
@@ -470,7 +597,7 @@ struct ReaderSettingsView: View {
                 } label: {
                     MarginsIcon(inset: margins == .narrow ? 3 : margins == .normal ? 6 : 9)
                         .foregroundStyle(selected ? accent : ink)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 32, height: 34)
                         .opacity(selected ? 1 : 0.55)
                 }
                 .buttonStyle(.plain)

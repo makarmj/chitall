@@ -75,6 +75,7 @@ struct ThemeColors {
 /// Book fonts. All of them have Cyrillic; a missing family falls back to the system serif.
 /// Source Serif 4 is bundled with the app (Adobe, SIL Open Font License 1.1, see Resources/Fonts):
 /// the closest open font to the text face of Claude, which itself is not licensed for apps.
+/// Andika (SIL) and OpenDyslexic are bundled for easy reading (DECISIONS.md §19), both OFL 1.1.
 enum ReaderFont: String, CaseIterable, Identifiable {
     case sourceSerif
     case newYork
@@ -82,6 +83,8 @@ enum ReaderFont: String, CaseIterable, Identifiable {
     case georgia
     case ptSans
     case sanFrancisco
+    case andika
+    case openDyslexic
 
     var id: String { rawValue }
 
@@ -93,6 +96,8 @@ enum ReaderFont: String, CaseIterable, Identifiable {
         case .georgia: return "Georgia"
         case .ptSans: return "PT Sans"
         case .sanFrancisco: return "SF Pro"
+        case .andika: return "Andika"
+        case .openDyslexic: return "OpenDyslexic"
         }
     }
 
@@ -104,8 +109,13 @@ enum ReaderFont: String, CaseIterable, Identifiable {
         case .ptSerif: return "PT Serif"
         case .georgia: return "Georgia"
         case .ptSans: return "PT Sans"
+        case .andika: return "Andika"
+        case .openDyslexic: return "OpenDyslexic"
         }
     }
+
+    /// Fonts made for readers with dyslexia: grouped apart in the settings.
+    var isEasyReadingFont: Bool { self == .andika || self == .openDyslexic }
 
     /// Fonts actually installed on this device (system designs always are).
     static var available: [ReaderFont] { allCases.filter(\.isInstalled) }
@@ -145,6 +155,7 @@ enum ReaderSpacing: String, CaseIterable, Identifiable {
     case compact
     case normal
     case relaxed
+    case airy
 
     var id: String { rawValue }
 
@@ -153,6 +164,7 @@ enum ReaderSpacing: String, CaseIterable, Identifiable {
         case .compact: return 1.2
         case .normal: return 1.4
         case .relaxed: return 1.65
+        case .airy: return 1.85
         }
     }
 
@@ -161,7 +173,101 @@ enum ReaderSpacing: String, CaseIterable, Identifiable {
         case .compact: return "Плотный интервал"
         case .normal: return "Обычный интервал"
         case .relaxed: return "Свободный интервал"
+        case .airy: return "Очень свободный интервал"
         }
+    }
+}
+
+/// Extra space between letters (and, proportionally, between words). Wider letter spacing is
+/// one of the few typographic changes with good evidence of helping readers with dyslexia
+/// (Zorzi et al., 2012): letters crowd each other less.
+enum ReaderLetterSpacing: String, CaseIterable, Identifiable, Comparable {
+    case normal
+    case light
+    case wide
+    case wider
+
+    var id: String { rawValue }
+
+    /// Extra space after every character, in em.
+    var em: CGFloat {
+        switch self {
+        case .normal: return 0
+        case .light: return 0.04
+        case .wide: return 0.08
+        case .wider: return 0.12
+        }
+    }
+
+    /// Word gaps grow with the letter gaps, or words would start to run together.
+    static let wordGapFactor: CGFloat = 2.5
+
+    var title: String {
+        switch self {
+        case .normal: return "Обычное расстояние между буквами"
+        case .light: return "Чуть шире между буквами"
+        case .wide: return "Шире между буквами"
+        case .wider: return "Ещё шире между буквами"
+        }
+    }
+
+    private var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.order < rhs.order }
+}
+
+/// "Лёгкое чтение": one switch for the settings that help most when reading is hard
+/// (DECISIONS.md §19). It is on while all of them are; each can still be tuned on its own.
+enum EasyReading {
+    static let letterSpacing = ReaderLetterSpacing.wide
+    static let spacing = ReaderSpacing.airy
+
+    struct Settings: Equatable {
+        var justified: Bool
+        var letterSpacing: ReaderLetterSpacing
+        var spacing: ReaderSpacing
+        var theme: ReaderTheme
+    }
+
+    /// Ragged right without hyphenation, wider letters and lines. Wider than the preset counts too.
+    static func isOn(_ settings: Settings) -> Bool {
+        !settings.justified
+            && settings.letterSpacing >= letterSpacing
+            && settings.spacing.lineHeightMultiple >= spacing.lineHeightMultiple
+    }
+
+    /// The preset on top of the current settings; a plain white page turns to soft paper.
+    static func applied(to settings: Settings) -> Settings {
+        var result = settings
+        result.justified = false
+        result.letterSpacing = max(settings.letterSpacing, letterSpacing)
+        if settings.spacing.lineHeightMultiple < spacing.lineHeightMultiple { result.spacing = spacing }
+        if settings.theme == .white { result.theme = .paper }
+        return result
+    }
+
+    /// Settings before the switch was turned on, kept to give them back when it is turned off.
+    static func encode(_ settings: Settings) -> String {
+        [settings.justified ? "1" : "0", settings.letterSpacing.rawValue, settings.spacing.rawValue, settings.theme.rawValue]
+            .joined(separator: "|")
+    }
+
+    static func decode(_ string: String) -> Settings? {
+        let parts = string.split(separator: "|").map(String.init)
+        guard parts.count == 4, let letters = ReaderLetterSpacing(rawValue: parts[1]),
+              let spacing = ReaderSpacing(rawValue: parts[2]), let theme = ReaderTheme(rawValue: parts[3]) else { return nil }
+        return Settings(justified: parts[0] == "1", letterSpacing: letters, spacing: spacing, theme: theme)
+    }
+
+    /// Turning the switch off: back to what was there before, or to the usual book look.
+    static func restored(from previous: Settings?, current: Settings) -> Settings {
+        if let previous, !isOn(previous) {
+            var result = previous
+            // A theme picked since stays; only the white page the preset softened comes back.
+            if !(previous.theme == .white && current.theme == .paper) { result.theme = current.theme }
+            return result
+        }
+        return Settings(justified: true, letterSpacing: .normal, spacing: .normal, theme: current.theme)
     }
 }
 
@@ -198,11 +304,12 @@ struct ReaderStyle: Equatable {
     var theme: ReaderTheme = .paper
     var justified = true
     var margins: ReaderMargins = .normal
+    var letterSpacing: ReaderLetterSpacing = .normal
     /// Book language for hyphenation (FB2 `lang`).
     var language = "ru"
 
     var key: String {
-        "\(fontSize)|\(lineSpacing)|\(font.rawValue)|\(theme.rawValue)|\(justified)|\(margins.rawValue)|\(language)"
+        "\(fontSize)|\(lineSpacing)|\(font.rawValue)|\(theme.rawValue)|\(justified)|\(margins.rawValue)|\(letterSpacing.rawValue)|\(language)"
     }
 
     var colors: ThemeColors { theme.colors }

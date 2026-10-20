@@ -76,6 +76,13 @@ final class ReaderModel {
     /// What is on screen now: the page in page mode, top to bottom of the screen in scroll mode.
     private(set) var visibleRange: ChapterRange?
     var chromeVisible = true
+    /// Counts page turns and drags by the reader (not jumps): the view hides its panels and the
+    /// "where I stopped" card when it changes.
+    private(set) var userMoves = 0
+    /// The reader's own reading speed (all books), for "≈ 6 мин до конца главы".
+    private(set) var pace: ReadingPace
+    /// The last words read before the saved place, shown once when the book reopens there.
+    private(set) var resumeSnippet: String?
     /// The query of the search sheet, kept while the book is open.
     @ObservationIgnored var lastSearchQuery = ""
 
@@ -90,10 +97,19 @@ final class ReaderModel {
     @ObservationIgnored private var bookmarkPositions: [UUID: (json: String, chapter: Int, offset: Int)] = [:]
     @ObservationIgnored private var chapterTexts: [Int: ChapterText] = [:]
     @ObservationIgnored private var lastPosition: (chapter: Int, utf16: Int)?
+    @ObservationIgnored private var wordIndexes: [Int: WordIndex] = [:]
+    /// Where and when the current stretch of reading started (for the pace).
+    @ObservationIgnored private var paceAnchor: (chapter: Int, offset: Int, time: Date)?
+    @ObservationIgnored private let defaults: UserDefaults
+    /// The clock, replaceable in tests.
+    @ObservationIgnored var now: () -> Date = Date.init
 
-    init(book: StoredBook, files: BookFileStore) {
+    init(book: StoredBook, files: BookFileStore, defaults: UserDefaults = .standard) {
         self.storedBook = book
         self.files = files
+        self.defaults = defaults
+        self.pace = defaults.data(forKey: ReaderPreferences.paceKey)
+            .flatMap { try? JSONDecoder().decode(ReadingPace.self, from: $0) } ?? ReadingPace()
     }
 
     var isReady: Bool { phase == .ready }
@@ -134,6 +150,7 @@ final class ReaderModel {
                 show(chapter: chapter, at: range.start, placement: .upperThird)
             } else if let position = savedReadingPosition(), let chapter = parsed.chapterIndex(ofBlock: position.block) {
                 show(chapter: chapter, at: position, placement: .top)
+                resumeSnippet = ResumeSnippet.make(from: parsed.text(before: position, limit: 600))
             } else {
                 show(chapter: 0)
             }
@@ -181,6 +198,7 @@ final class ReaderModel {
         let offset = position.flatMap { text.utf16Offset(of: $0) } ?? 0
         navigation = NavigationRequest(chapter: index, utf16Offset: offset, placement: placement)
         lastPosition = (index, offset)
+        paceAnchor = nil // a jump is not reading
     }
 
     func showNextChapter() { show(chapter: chapterIndex + 1) }
@@ -255,6 +273,52 @@ final class ReaderModel {
     private func setVisible(chapter: Int, from start: Int, to end: Int) {
         let range = ChapterRange(chapter: chapter, range: NSRange(location: start, length: max(0, end - start)))
         if visibleRange != range { visibleRange = range }
+        measurePace(chapter: chapter, offset: start)
+    }
+
+    // MARK: Reading pace, time left, the reader's own moves
+
+    /// A page turn or a drag by the reader (not a jump from the contents or the slider).
+    func userDidMove() {
+        userMoves &+= 1
+    }
+
+    func dismissResume() {
+        if resumeSnippet != nil { resumeSnippet = nil }
+    }
+
+    /// Words in a chapter from its start up to every offset (cached, cheap to query).
+    func wordIndex(chapter: Int) -> WordIndex? {
+        if let cached = wordIndexes[chapter] { return cached }
+        guard let text = chapterText(chapter) else { return nil }
+        let index = WordIndex(text.string)
+        wordIndexes[chapter] = index
+        return index
+    }
+
+    /// "≈ 6 мин до конца главы" from the top of the screen, at the reader's own pace.
+    var chapterTimeLeft: String? {
+        guard let visible = visibleRange, let index = wordIndex(chapter: visible.chapter) else { return nil }
+        return pace.chapterLeftLabel(words: index.words(from: visible.range.location))
+    }
+
+    /// Reading forward in a chapter teaches the pace: words passed over the time it took.
+    /// Jumps, skimming and pauses are rejected by `ReadingPace.record`.
+    private func measurePace(chapter: Int, offset: Int) {
+        let time = now()
+        guard let anchor = paceAnchor, anchor.chapter == chapter, offset >= anchor.offset else {
+            paceAnchor = (chapter, offset, time)
+            return
+        }
+        guard let index = wordIndex(chapter: chapter) else { return }
+        let words = index.words(in: anchor.offset..<offset)
+        // Scrolling reports every line: wait for a stretch long enough to measure.
+        guard words >= 40 || time.timeIntervalSince(anchor.time) > 600 else { return }
+        if pace.record(words: words, seconds: time.timeIntervalSince(anchor.time)),
+           let data = try? JSONEncoder().encode(pace) {
+            defaults.set(data, forKey: ReaderPreferences.paceKey)
+        }
+        paceAnchor = (chapter, offset, time)
     }
 
     /// The end of the last chapter is on screen: only then the reader shows "100 %".
@@ -498,6 +562,7 @@ final class ReaderModel {
         chapterIndex = position.chapter
         navigation = NavigationRequest(chapter: position.chapter, utf16Offset: position.offset, placement: .top)
         lastPosition = (position.chapter, position.offset)
+        paceAnchor = nil
     }
 
     /// Bookmark offsets for the current chapter and its neighbours (ribbons on pages).

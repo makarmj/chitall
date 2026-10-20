@@ -549,7 +549,9 @@ final class AppTests: XCTestCase {
         wide.margins = .wide
         var ragged = base
         ragged.justified = false
-        XCTAssertEqual(Set([base.key, dark.key, wide.key, ragged.key]).count, 4)
+        var spaced = base
+        spaced.letterSpacing = .wide
+        XCTAssertEqual(Set([base.key, dark.key, wide.key, ragged.key, spaced.key]).count, 5)
         XCTAssertEqual(ReaderTheme.system.resolved(for: .dark), .wood)
         XCTAssertEqual(ReaderTheme.system.resolved(for: .light), .paper)
         XCTAssertTrue(ReaderTheme.black.isDark)
@@ -619,5 +621,213 @@ final class AppTests: XCTestCase {
         let pages = Paginator.paginate(text, pageSize: CGSize(width: 320, height: 400))
         XCTAssertEqual(pages.ranges.reduce(0) { $0 + $1.length }, text.length)
         XCTAssertLessThanOrEqual(attachment.maxHeight, 400)
+    }
+
+    // MARK: Easy reading (iteration 4)
+
+    func testEasyReadingFontsAreBundled() {
+        XCTAssertTrue(ReaderFont.available.contains(.andika), "families: \(UIFont.familyNames.sorted())")
+        XCTAssertTrue(ReaderFont.available.contains(.openDyslexic), "families: \(UIFont.familyNames.sorted())")
+        XCTAssertTrue(ReaderFont.andika.font(size: 17, traits: .traitItalic).fontDescriptor.symbolicTraits.contains(.traitItalic))
+        XCTAssertTrue(ReaderFont.openDyslexic.font(size: 17, weight: .semibold).fontDescriptor.symbolicTraits.contains(.traitBold))
+    }
+
+    func testFontWithoutItalicGetsASlantForEmphasis() throws {
+        let book = try FB2Parser.parse(sampleData()).book
+        let text = ChapterText(chapter: book.chapters[1])
+        let white = (text.string as NSString).range(of: "белый")
+        XCTAssertNotEqual(white.location, NSNotFound)
+
+        var style = ReaderStyle(fontSize: 19, lineSpacing: 1.4, font: .openDyslexic)
+        var rendered = ChapterRenderer.render(text, book: book, style: style)
+        XCTAssertEqual(rendered.attribute(.obliqueness, at: white.location, effectiveRange: nil) as? CGFloat, 0.18)
+        XCTAssertNil(rendered.attribute(.obliqueness, at: 0, effectiveRange: nil), "only emphasis is slanted")
+
+        style.font = .sourceSerif // has a real italic
+        rendered = ChapterRenderer.render(text, book: book, style: style)
+        XCTAssertNil(rendered.attribute(.obliqueness, at: white.location, effectiveRange: nil))
+    }
+
+    func testLetterSpacingWidensLettersAndWordsWithoutChangingTheText() throws {
+        let book = try FB2Parser.parse(sampleData()).book
+        let text = ChapterText(chapter: book.chapters[1])
+        var style = ReaderStyle(fontSize: 20, lineSpacing: 1.85, justified: false, letterSpacing: .wide)
+        let rendered = ChapterRenderer.render(text, book: book, style: style)
+        XCTAssertEqual(rendered.string, text.string, "offsets of highlights stay valid")
+
+        let string = text.string as NSString
+        let space = string.range(of: " ").location
+        let letter = string.range(of: "белый").location
+        let letterKern = try XCTUnwrap(rendered.attribute(.kern, at: letter, effectiveRange: nil) as? CGFloat)
+        let spaceKern = try XCTUnwrap(rendered.attribute(.kern, at: space, effectiveRange: nil) as? CGFloat)
+        XCTAssertEqual(letterKern, 0.08 * 20, accuracy: 0.001)
+        XCTAssertEqual(spaceKern, letterKern * ReaderLetterSpacing.wordGapFactor, accuracy: 0.001)
+
+        // Ragged right means whole words: no hyphenation, no justification.
+        let body = string.range(of: "Обоз подошёл").location
+        let paragraph = try XCTUnwrap(rendered.attribute(.paragraphStyle, at: body, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(paragraph.hyphenationFactor, 0)
+        XCTAssertNotEqual(paragraph.alignment, .justified)
+        XCTAssertEqual(paragraph.lineHeightMultiple, 1.85, accuracy: 0.001)
+
+        style.letterSpacing = .normal
+        let plain = ChapterRenderer.render(text, book: book, style: style)
+        XCTAssertNil(plain.attribute(.kern, at: letter, effectiveRange: nil))
+        // Wider letters take more room: at least as many pages for the same chapter.
+        let size = CGSize(width: 320, height: 520)
+        XCTAssertGreaterThanOrEqual(Paginator.paginate(rendered, pageSize: size).count, Paginator.paginate(plain, pageSize: size).count)
+    }
+
+    func testEasyReadingSwitchAppliesThePresetAndGivesTheOldLookBack() {
+        let book = EasyReading.Settings(justified: true, letterSpacing: .normal, spacing: .normal, theme: .white)
+        XCTAssertFalse(EasyReading.isOn(book))
+        let easy = EasyReading.applied(to: book)
+        XCTAssertTrue(EasyReading.isOn(easy))
+        XCTAssertEqual(easy, EasyReading.Settings(justified: false, letterSpacing: .wide, spacing: .airy, theme: .paper))
+
+        // Wider than the preset is still "on" and is not narrowed.
+        var wider = easy
+        wider.letterSpacing = .wider
+        XCTAssertTrue(EasyReading.isOn(wider))
+        XCTAssertEqual(EasyReading.applied(to: wider).letterSpacing, .wider)
+
+        // Off: the saved settings come back, white page included.
+        let saved = EasyReading.decode(EasyReading.encode(book))
+        XCTAssertEqual(saved, book)
+        XCTAssertEqual(EasyReading.restored(from: saved, current: easy), book)
+        // A theme picked meanwhile stays.
+        var black = easy
+        black.theme = .black
+        XCTAssertEqual(EasyReading.restored(from: saved, current: black).theme, .black)
+        // Nothing saved: the usual book look.
+        XCTAssertEqual(
+            EasyReading.restored(from: nil, current: easy),
+            EasyReading.Settings(justified: true, letterSpacing: .normal, spacing: .normal, theme: .paper)
+        )
+        XCTAssertNil(EasyReading.decode("garbage"))
+    }
+
+    func testReadingPaceIsLearntFromPageTurnsAndGivesTimeLeft() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let suite = "chitall-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = ReaderModel(book: book, files: files, defaults: defaults)
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        model.now = { clock }
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+
+        let index = try XCTUnwrap(model.wordIndex(chapter: 1))
+        XCTAssertGreaterThan(index.count, 45)
+        let next = index.starts[44]
+        model.didShowPage(chapter: 1, page: 0, pageCount: 2, firstOffset: 0, endOffset: next)
+        XCTAssertEqual(model.chapterTimeLeft, ReadingPace().chapterLeftLabel(words: index.count))
+
+        clock += 20 // 44 words in 20 s: 132 words a minute
+        model.didShowPage(chapter: 1, page: 1, pageCount: 2, firstOffset: next, endOffset: next + 10)
+        XCTAssertEqual(model.pace.measuredWords, 44)
+        XCTAssertEqual(model.pace.wordsPerMinute, 132, accuracy: 0.5)
+        XCTAssertNotNil(defaults.data(forKey: ReaderPreferences.paceKey), "the pace is kept for the next book")
+        XCTAssertNotNil(model.chapterTimeLeft)
+
+        // A jump from the contents is not reading: it teaches nothing.
+        model.show(chapter: 3)
+        clock += 1
+        model.didShowPage(chapter: 3, page: 0, pageCount: 1, firstOffset: 0, endOffset: 50)
+        XCTAssertEqual(model.pace.measuredWords, 44)
+
+        let reopened = ReaderModel(book: book, files: files, defaults: defaults)
+        XCTAssertEqual(reopened.pace, model.pace)
+    }
+
+    func testReopenedBookShowsWhereTheReaderStopped() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: context) else {
+            return XCTFail("expected a new book")
+        }
+        let first = ReaderModel(book: book, files: files)
+        await first.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        XCTAssertNil(first.resumeSnippet, "a new book starts at the beginning: nothing to recall")
+        let text = try XCTUnwrap(first.rendered(chapter: 1)).text.string as NSString
+        let place = text.range(of: "Стражник был молод")
+        first.saveReadingPosition(chapter: 1, atUTF16: place.location)
+
+        let reopened = ReaderModel(book: book, files: files)
+        await reopened.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        let snippet = try XCTUnwrap(reopened.resumeSnippet)
+        let before = text.substring(to: place.location).split(whereSeparator: \.isWhitespace).suffix(3).joined(separator: " ")
+        XCTAssertTrue(snippet.hasSuffix(before), "'\(snippet)' ends with the words right before the place: '\(before)'")
+        XCTAssertLessThanOrEqual(snippet.count, 221)
+
+        // Reading on (a page turn or a drag) puts the card away.
+        let moves = reopened.userMoves
+        reopened.userDidMove()
+        XCTAssertEqual(reopened.userMoves, moves + 1)
+        reopened.dismissResume()
+        XCTAssertNil(reopened.resumeSnippet)
+
+        // Opening a highlight goes straight there: no card.
+        let selection = ChapterRange(chapter: 1, range: text.range(of: "белый"))
+        let highlight = try XCTUnwrap(reopened.createHighlight(for: selection, color: .azure, context: context))
+        let viaHighlight = ReaderModel(book: book, files: files)
+        await viaHighlight.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: highlight)
+        XCTAssertNil(viaHighlight.resumeSnippet)
+    }
+
+    func testFocusRulerLightsTheParagraphAtTheReadingLine() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        let controller = ContinuousReaderController(model: model)
+        controller.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        controller.view.layoutIfNeeded()
+        model.show(chapter: 1)
+        controller.update(style: model.style, highlights: [], decorationsToken: 0, navigation: model.navigation)
+        controller.view.layoutIfNeeded()
+        XCTAssertTrue(controller.focusDim.isHidden, "off by default")
+
+        controller.focusRuler = true
+        controller.view.layoutIfNeeded()
+        XCTAssertFalse(controller.focusDim.isHidden)
+        let lit = try XCTUnwrap(controller.focusDim.litRange)
+        let table = controller.tableView
+        let insets = table.adjustedContentInset
+        let readingY = insets.top + (table.bounds.height - insets.top - insets.bottom) * ContinuousReaderController.readingLine
+        XCTAssertTrue(lit.contains(readingY), "the reading line \(readingY) is lit: \(lit)")
+        XCTAssertGreaterThan(lit.upperBound - lit.lowerBound, 19)
+        XCTAssertLessThan(lit.upperBound - lit.lowerBound, 844 * 0.5, "the rest of the screen is dimmed")
+
+        // The band follows the tape.
+        table.setContentOffset(CGPoint(x: 0, y: table.contentOffset.y + 300), animated: false)
+        controller.view.layoutIfNeeded()
+        let moved = try XCTUnwrap(controller.focusDim.litRange)
+        XCTAssertTrue(moved.contains(readingY))
+
+        controller.focusRuler = false
+        XCTAssertTrue(controller.focusDim.isHidden)
+    }
+
+    func testPageFooterShowsTimeLeftInTheChapter() async throws {
+        let container = try ChitallStore.makeContainer(inMemory: true)
+        let files = try makeFiles()
+        guard case let .imported(book) = try await BookImportService(files: files).importData(try sampleData(), originalFileName: "s.fb2", into: container.mainContext) else {
+            return XCTFail("expected a new book")
+        }
+        let model = ReaderModel(book: book, files: files)
+        await model.load(style: ReaderStyle(fontSize: 19, lineSpacing: 1.4), initialHighlight: nil)
+        let controller = PagedReaderController(model: model)
+        let label = controller.pageLabel(for: PageLocation(chapter: 1, page: 0), pageCount: 3, range: NSRange(location: 0, length: 10))
+        XCTAssertTrue(label.hasPrefix("1 / 3 · ≈ "), label)
+        XCTAssertTrue(label.hasSuffix("мин до конца главы"), label)
     }
 }

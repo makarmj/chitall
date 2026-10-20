@@ -15,6 +15,11 @@ struct ReaderView: View {
     @AppStorage(ReaderPreferences.lastColorKey) private var lastColorRaw = HighlightColor.default.rawValue
     @AppStorage(ReaderPreferences.modeKey) private var modeRaw = ReadingMode.pages.rawValue
     @AppStorage(ReaderPreferences.pageHintShownKey) private var pageHintShown = false
+    @AppStorage(ReaderPreferences.letterSpacingKey) private var letterSpacingRaw = ReaderLetterSpacing.normal.rawValue
+    @AppStorage(ReaderPreferences.focusRulerKey) private var focusRuler = false
+    @AppStorage(ReaderPreferences.cleanScreenKey) private var cleanScreen = false
+    @AppStorage(ReaderPreferences.resumeCardKey) private var resumeCardEnabled = true
+    @AppStorage(ReaderPreferences.sessionMinutesKey) private var sessionMinutes = 0
 
     @Query private var highlights: [Highlight]
     @Query private var bookmarks: [Bookmark]
@@ -31,6 +36,9 @@ struct ReaderView: View {
     @State private var scrubValue: Double?
     /// Brightness chosen in the reader; `nil` while untouched (the system value stays).
     @State private var brightness: Double?
+    /// When the current reading session ends (the pause reminder), `nil` without one.
+    @State private var sessionEnd: Date?
+    @State private var showsSessionBanner = false
 
     private let initialHighlightID: UUID?
 
@@ -61,7 +69,8 @@ struct ReaderView: View {
             font: ReaderFont(rawValue: fontRaw) ?? .sourceSerif,
             theme: theme,
             justified: justified,
-            margins: ReaderMargins(rawValue: marginsRaw) ?? .normal
+            margins: ReaderMargins(rawValue: marginsRaw) ?? .normal,
+            letterSpacing: ReaderLetterSpacing(rawValue: letterSpacingRaw) ?? .normal
         )
     }
 
@@ -127,7 +136,8 @@ struct ReaderView: View {
                         numbering: model.pageNumbering,
                         bookmarks: model.bookmarkOffsetsAroundCurrentChapter(bookmarks),
                         navigation: model.navigation,
-                        actions: textActions
+                        actions: textActions,
+                        cleanScreen: cleanScreen
                     )
                     .ignoresSafeArea()
                 case .scroll:
@@ -138,7 +148,8 @@ struct ReaderView: View {
                         decorationsToken: decorationsToken,
                         bookmarks: model.bookmarkOffsets(bookmarks),
                         navigation: model.navigation,
-                        actions: textActions
+                        actions: textActions,
+                        focusRuler: focusRuler
                     )
                     .ignoresSafeArea()
                 }
@@ -148,7 +159,28 @@ struct ReaderView: View {
             if model.chromeVisible { topBar.transition(.move(edge: .top).combined(with: .opacity)) }
         }
         .overlay(alignment: .bottom) {
-            if model.chromeVisible, model.isReady { bottomPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
+            VStack(spacing: 12) {
+                if showsSessionBanner {
+                    SessionBanner(
+                        minutes: sessionMinutes,
+                        colors: colors,
+                        onMore: { startSession() },
+                        onClose: { withAnimation { showsSessionBanner = false } }
+                    )
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if resumeCardEnabled, model.isReady, let snippet = model.resumeSnippet {
+                    ResumeCard(
+                        snippet: snippet,
+                        lastHighlight: highlights.max { $0.createdAt < $1.createdAt },
+                        style: model.style,
+                        onClose: { withAnimation { model.dismissResume() } }
+                    )
+                    .padding(.horizontal, 16)
+                    .transition(.opacity)
+                }
+                if model.chromeVisible, model.isReady { bottomPanel.transition(.move(edge: .bottom).combined(with: .opacity)) }
+            }
         }
         .overlay {
             if mode == .pages, model.isReady, !pageHintShown {
@@ -157,13 +189,29 @@ struct ReaderView: View {
             }
         }
         // In page mode the status bar stays: hiding it would change the page size and reflow the book.
-        .statusBarHidden(mode == .scroll && !model.chromeVisible)
+        // "Чистый экран" hides it for good, so the page size stays the same there too.
+        .statusBarHidden(cleanScreen || (mode == .scroll && !model.chromeVisible))
         .preferredColorScheme(preferredScheme)
         .task {
             let initial = initialHighlightID.flatMap { id in highlights.first { $0.id == id } }
             await model.load(style: style, initialHighlight: initial)
         }
         .onChange(of: style) { model.restyle(style) }
+        .onChange(of: model.userMoves) {
+            // Reading has started: the card has done its job, and a clean screen hides the panels.
+            withAnimation(.easeInOut(duration: 0.25)) {
+                model.dismissResume()
+                if cleanScreen, model.chromeVisible { model.chromeVisible = false }
+            }
+        }
+        .onChange(of: model.isReady) { if model.isReady { startSession() } }
+        .onChange(of: sessionMinutes) { startSession() }
+        .task(id: sessionEnd) {
+            guard let end = sessionEnd else { return }
+            try? await Task.sleep(for: .seconds(max(0, end.timeIntervalSinceNow)))
+            guard !Task.isCancelled, sessionEnd == end else { return }
+            withAnimation { showsSessionBanner = true }
+        }
         .onChange(of: modeRaw) { model.navigateToCurrentPosition() }
         .onChange(of: brightness) {
             if let brightness { ReaderBrightness.apply(brightness) }
@@ -225,7 +273,7 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $showsSettings) {
             ReaderSettingsView(brightness: $brightness, colors: colors, isDark: theme.isDark)
-                .presentationDetents([.height(500), .large])
+                .presentationDetents([.height(540), .large])
                 .presentationBackground(Color(uiColor: colors.chrome))
         }
         .sheet(isPresented: $showsBookInfo) {
@@ -399,6 +447,9 @@ struct ReaderView: View {
             return "\(MaterialExport.wholePercent(value)) · \(chapter)"
         }
         let percent = "\(model.progressPercent) от всей книги"
+        if mode == .scroll, let left = model.chapterTimeLeft {
+            return "\(model.progressPercent) · \(left)"
+        }
         if mode == .pages, let status = model.pageStatus, let numbering = model.pageNumbering,
            let page = numbering.pageNumber(chapter: status.chapter, page: status.page) {
             return "стр. \(page) из \(numbering.total) · \(percent)"
@@ -422,6 +473,12 @@ struct ReaderView: View {
     }
 
     // MARK: Actions
+
+    /// Starts (or restarts) the reading session for the pause reminder.
+    private func startSession() {
+        showsSessionBanner = false
+        sessionEnd = sessionMinutes > 0 ? Date.now.addingTimeInterval(Double(sessionMinutes) * 60) : nil
+    }
 
     private func handle(_ action: SelectionAction) {
         switch action {

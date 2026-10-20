@@ -17,6 +17,8 @@ struct ContinuousBookView: UIViewControllerRepresentable {
     var bookmarks: [Int: [Int]]
     var navigation: NavigationRequest?
     var actions: ReaderTextActions
+    /// Light up the paragraph at the reading line and dim the rest.
+    var focusRuler = false
 
     func makeUIViewController(context: Context) -> ContinuousReaderController {
         ContinuousReaderController(model: model)
@@ -24,6 +26,7 @@ struct ContinuousBookView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: ContinuousReaderController, context: Context) {
         controller.actions = actions
+        controller.focusRuler = focusRuler
         controller.update(style: style, highlights: highlights, decorationsToken: decorationsToken, navigation: navigation, bookmarks: bookmarks)
     }
 
@@ -37,6 +40,13 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
     static let maximumLoadedChapters = 5
 
     var actions = ReaderTextActions()
+    /// The focus ruler (DECISIONS.md §19): the paragraph crossing the reading line stays
+    /// bright, at most five lines of it, the rest of the tape is dimmed.
+    var focusRuler = false {
+        didSet { if focusRuler != oldValue { updateFocus() } }
+    }
+    /// The reading line, as a share of the visible height from its top.
+    static let readingLine: CGFloat = 0.3
 
     private struct LoadedChapter {
         let chapter: Int
@@ -49,6 +59,7 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
 
     private let model: ReaderModel
     let tableView = UITableView(frame: .zero, style: .plain)
+    let focusDim = FocusDimView()
     private var loaded: [LoadedChapter] = []
 
     /// For tests: which chapters are in the scroll right now, and what is at the top.
@@ -92,11 +103,17 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         tableView.frame = view.bounds
         tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(tableView)
+        focusDim.frame = view.bounds
+        focusDim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        focusDim.isUserInteractionEnabled = false // selection and taps go to the text below
+        view.addSubview(focusDim)
+        updateFocus()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard let style else { return }
+        defer { updateFocus() }
         let width = max(0, view.bounds.width - view.safeAreaInsets.left - view.safeAreaInsets.right - 2 * style.margins.points).rounded(.down)
         guard width > 1, width != textWidth else { return }
         // Width changed (first layout, rotation): cut the chapters again and stay on the same text.
@@ -141,6 +158,7 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
             if hadStyle, textWidth > 1, let anchor, navigation?.id == handledNavigation || navigation == nil {
                 show(chapter: anchor.chapter, offset: anchor.offset, placement: .top)
             }
+            updateFocus()
         }
 
         if let navigation, navigation.id != handledNavigation {
@@ -213,6 +231,7 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         // Make room to scroll up right away, and report the new position.
         loadNeighboursIfNeeded()
         reportPosition()
+        updateFocus()
     }
 
     private func scroll(toY y: CGFloat) {
@@ -347,6 +366,40 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         }
     }
 
+    // MARK: Focus ruler
+
+    /// The bright band in view coordinates: the paragraph at the reading line, clipped to two
+    /// lines above and below the line itself so a long paragraph still guides the eye.
+    func focusBand() -> CGRect? {
+        let insets = tableView.adjustedContentInset
+        let readingY = insets.top + (tableView.bounds.height - insets.top - insets.bottom) * Self.readingLine
+        let contentY = tableView.contentOffset.y + readingY
+        guard let indexPath = tableView.indexPathForRow(at: CGPoint(x: tableView.bounds.midX, y: contentY)),
+              let cell = tableView.cellForRow(at: indexPath) as? ChunkCell else { return nil }
+        cell.layoutIfNeeded()
+        let yInFragment = tableView.convert(CGPoint(x: 0, y: contentY), to: cell.fragment).y
+        guard let lines = cell.fragment.focusLines(atY: yInFragment) else { return nil }
+        let paragraph = cell.fragment.convert(lines.paragraph, to: view)
+        let line = cell.fragment.convert(lines.line, to: view)
+        let reach = line.height * 2
+        let top = max(paragraph.minY, line.minY - reach)
+        let bottom = min(paragraph.maxY, line.maxY + reach)
+        guard bottom > top else { return nil }
+        // A little air, so descenders and the line spacing are not cut.
+        return CGRect(x: 0, y: top - 4, width: view.bounds.width, height: bottom - top + 8)
+    }
+
+    private func updateFocus() {
+        guard isViewLoaded else { return }
+        guard focusRuler, let style, !loaded.isEmpty else {
+            focusDim.isHidden = true
+            return
+        }
+        focusDim.isHidden = false
+        focusDim.dimColor = style.colors.background.withAlphaComponent(style.theme.isDark ? 0.7 : 0.62)
+        focusDim.band = focusBand()
+    }
+
     private func setScrollEnabled(_ enabled: Bool) {
         tableView.isScrollEnabled = enabled
     }
@@ -387,6 +440,11 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
         guard !isAdjusting else { return }
         loadNeighboursIfNeeded()
         reportVisibleIfChanged()
+        updateFocus()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        model.userDidMove()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -400,6 +458,54 @@ final class ContinuousReaderController: UIViewController, UITableViewDataSource,
     private func settle() {
         trimLoadedChapters()
         reportPosition()
+    }
+}
+
+/// Two translucent sheets in the theme's background colour above and below the focus band.
+final class FocusDimView: UIView {
+    private let above = UIView()
+    private let below = UIView()
+
+    var dimColor: UIColor = .clear {
+        didSet {
+            above.backgroundColor = dimColor
+            below.backgroundColor = dimColor
+        }
+    }
+
+    /// The bright band; `nil` dims nothing (no text under the reading line).
+    var band: CGRect? {
+        didSet { if band != oldValue { setNeedsLayout() } }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        addSubview(above)
+        addSubview(below)
+        isAccessibilityElement = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("FocusDimView is created in code")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let band else {
+            above.frame = .zero
+            below.frame = .zero
+            return
+        }
+        above.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, band.minY))
+        below.frame = CGRect(x: 0, y: band.maxY, width: bounds.width, height: max(0, bounds.height - band.maxY))
+    }
+
+    /// The lit band as laid out (for tests).
+    var litRange: ClosedRange<CGFloat>? {
+        guard !isHidden, band != nil else { return nil }
+        return above.frame.maxY...below.frame.minY
     }
 }
 

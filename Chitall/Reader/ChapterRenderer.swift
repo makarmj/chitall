@@ -11,6 +11,15 @@ enum ReaderPreferences {
     static let lastColorKey = "reader.lastHighlightColor"
     static let modeKey = "reader.mode"
     static let pageHintShownKey = "reader.pageHintShown"
+    static let letterSpacingKey = "reader.letterSpacing"
+    /// Settings from before "Лёгкое чтение" was turned on (`EasyReading.encode`).
+    static let easyReadingPreviousKey = "reader.easyReading.previous"
+    static let focusRulerKey = "reader.focusRuler"
+    static let cleanScreenKey = "reader.cleanScreen"
+    static let resumeCardKey = "reader.resumeCard"
+    static let sessionMinutesKey = "reader.sessionMinutes"
+    /// `ReadingPace` as JSON: the reader's own speed, shared by all books.
+    static let paceKey = "reader.pace"
 
     static let defaultFontSize: Double = 19
     static let fontSizeRange: ClosedRange<Double> = 14...32
@@ -54,6 +63,9 @@ enum ChapterRenderer {
                     .font: look.font,
                     .foregroundColor: look.color,
                 ], range: paragraphRange)
+                if let slant = syntheticObliqueness(for: look.font, wanted: look.traits) {
+                    result.addAttribute(.obliqueness, value: slant, range: paragraphRange)
+                }
             }
 
             for run in block.runs {
@@ -73,7 +85,33 @@ enum ChapterRenderer {
             }
             previous = block
         }
+        applyLetterSpacing(to: result, style: style)
         return result
+    }
+
+    /// Extra space after every character, and more after spaces so words stay apart.
+    /// Only attributes change: offsets still match `ChapterText`.
+    static func applyLetterSpacing(to text: NSMutableAttributedString, style: ReaderStyle) {
+        let kern = style.letterSpacing.em * style.fontSize
+        guard kern > 0, text.length > 0 else { return }
+        text.addAttribute(.kern, value: kern, range: NSRange(location: 0, length: text.length))
+        let wordKern = kern * ReaderLetterSpacing.wordGapFactor
+        let utf16 = text.string.utf16
+        var index = 0
+        for unit in utf16 {
+            // Plain and no-break spaces; a line never ends on extra space, ragged right hides it.
+            if unit == 0x20 || unit == 0xA0 {
+                text.addAttribute(.kern, value: wordKern, range: NSRange(location: index, length: 1))
+            }
+            index += 1
+        }
+    }
+
+    /// Fonts without an italic (OpenDyslexic here) get a slanted upright instead of losing
+    /// emphasis altogether.
+    static func syntheticObliqueness(for font: UIFont, wanted traits: UIFontDescriptor.SymbolicTraits) -> CGFloat? {
+        guard traits.contains(.traitItalic), !font.fontDescriptor.symbolicTraits.contains(.traitItalic) else { return nil }
+        return 0.18
     }
 
     static func linkURL(_ target: String, isNote: Bool) -> URL? {
@@ -107,7 +145,9 @@ enum ChapterRenderer {
         if run.style.contains(.code) {
             attributes[.font] = UIFont.monospacedSystemFont(ofSize: size * 0.9, weight: .regular)
         } else {
-            attributes[.font] = style.font.font(size: size, weight: look.weight, traits: traits)
+            let font = style.font.font(size: size, weight: look.weight, traits: traits)
+            attributes[.font] = font
+            if let slant = syntheticObliqueness(for: font, wanted: traits) { attributes[.obliqueness] = slant }
         }
         if run.style.contains(.strikethrough) {
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
@@ -135,9 +175,10 @@ private struct BlockLook {
         paragraph.lineHeightMultiple = style.lineSpacing
         paragraph.lineBreakMode = .byWordWrapping
         paragraph.paragraphSpacing = base * 0.3
-        // Body text: justified with hyphenation like a printed book, or ragged right.
+        // Body text: justified with hyphenation like a printed book, or ragged right with whole
+        // words, which is easier to read with dyslexia (even word gaps, no split words).
         paragraph.alignment = style.justified ? .justified : .natural
-        paragraph.hyphenationFactor = style.justified ? 0.9 : 0.3
+        paragraph.hyphenationFactor = style.justified ? 0.9 : 0
 
         var size = base
         var weight: UIFont.Weight = .regular

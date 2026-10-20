@@ -85,6 +85,19 @@ final class TextFragmentView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         return line.offsetBy(dx: textFrame.minX, dy: textFrame.minY)
     }
 
+    /// For the focus ruler: the paragraph and the line at `y`, in this view's coordinates.
+    func focusLines(atY y: CGFloat) -> (paragraph: CGRect, line: CGRect)? {
+        let storage = textView.textStorage
+        guard storage.length > 0 else { return nil }
+        let layoutManager = textView.layoutManager
+        let local = min(textView.characterIndex(atY: y - textFrame.minY), storage.length - 1)
+        let paragraphRange = (storage.string as NSString).paragraphRange(for: NSRange(location: local, length: 0))
+        let glyphs = layoutManager.glyphRange(forCharacterRange: paragraphRange, actualCharacterRange: nil)
+        let paragraph = layoutManager.boundingRect(forGlyphRange: glyphs, in: textView.textContainer)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: local), effectiveRange: nil)
+        return (paragraph.offsetBy(dx: textFrame.minX, dy: textFrame.minY), line.offsetBy(dx: textFrame.minX, dy: textFrame.minY))
+    }
+
     // MARK: Taps
 
     private func isInTurnZone(_ point: CGPoint) -> Bool {

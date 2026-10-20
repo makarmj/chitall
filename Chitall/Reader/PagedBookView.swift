@@ -12,6 +12,8 @@ struct PagedBookView: UIViewControllerRepresentable {
     var bookmarks: [Int: [Int]]
     var navigation: NavigationRequest?
     var actions: ReaderTextActions
+    /// "Чистый экран": no chapter title above the text.
+    var cleanScreen = false
 
     func makeUIViewController(context: Context) -> PagedReaderController {
         PagedReaderController(model: model)
@@ -19,6 +21,7 @@ struct PagedBookView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: PagedReaderController, context: Context) {
         controller.actions = actions
+        controller.cleanScreen = cleanScreen
         controller.update(style: style, decorations: decorations, numbering: numbering, bookmarks: bookmarks, navigation: navigation)
     }
 
@@ -35,6 +38,12 @@ struct PageLocation: Equatable {
 
 final class PagedReaderController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
     var actions = ReaderTextActions()
+    var cleanScreen = false {
+        didSet {
+            guard cleanScreen != oldValue else { return }
+            for case let page as PageViewController in pager.viewControllers ?? [] { page.showsHeader = !cleanScreen }
+        }
+    }
 
     private let model: ReaderModel
     private let pager = UIPageViewController(
@@ -125,7 +134,7 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         if newNumbering != numbering {
             numbering = newNumbering
             for case let page as PageViewController in pager.viewControllers ?? [] {
-                page.pageLabel = pageLabel(for: page.location, pageCount: page.pageCount)
+                page.pageLabel = pageLabel(for: page.location, pageCount: page.pageCount, range: page.range)
             }
         }
 
@@ -157,12 +166,18 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         (bookmarks[page.location.chapter] ?? []).contains { $0 >= page.range.location && $0 < NSMaxRange(page.range) }
     }
 
-    /// "118 из 294" when the whole book is paginated for this layout, else "5 / 23" in the chapter.
-    private func pageLabel(for location: PageLocation, pageCount: Int) -> String {
+    /// "118 из 294" when the whole book is paginated for this layout, else "5 / 23" in the chapter;
+    /// then the time left in the chapter at the reader's pace.
+    func pageLabel(for location: PageLocation, pageCount: Int, range: NSRange) -> String {
+        var label = "\(location.page + 1) / \(pageCount)"
         if let numbering, numbering.layoutKey == layoutKey, let global = numbering.pageNumber(chapter: location.chapter, page: location.page) {
-            return "\(global) из \(numbering.total)"
+            label = "\(global) из \(numbering.total)"
         }
-        return "\(location.page + 1) / \(pageCount)"
+        if let index = model.wordIndex(chapter: location.chapter),
+           let left = model.pace.chapterLeftLabel(words: index.words(from: range.location)) {
+            label += " · " + left
+        }
+        return label
     }
 
     private func invalidateLayouts() {
@@ -196,7 +211,8 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
             geometry: geometry,
             colors: style.colors
         )
-        page.pageLabel = pageLabel(for: location, pageCount: pages.count)
+        page.pageLabel = pageLabel(for: location, pageCount: pages.count, range: range)
+        page.showsHeader = !cleanScreen
         page.isBookmarked = isBookmarked(page)
         page.apply(decorations: decorations[location.chapter] ?? [])
         page.actions = actions
@@ -251,6 +267,7 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
             return
         }
         isTurning = true
+        model.userDidMove()
         pager.setViewControllers([page], direction: forward ? .forward : .reverse, animated: true) { [weak self] _ in
             guard let self else { return }
             self.isTurning = false
@@ -311,7 +328,10 @@ final class PagedReaderController: UIViewController, UIPageViewControllerDataSou
         previousViewControllers: [UIViewController],
         transitionCompleted completed: Bool
     ) {
-        if completed { reportCurrentPage() }
+        if completed {
+            model.userDidMove()
+            reportCurrentPage()
+        }
     }
 }
 
@@ -346,6 +366,9 @@ final class PageViewController: UIViewController {
     var isBookmarked = false {
         didSet { ribbon.isHidden = !isBookmarked }
     }
+    var showsHeader = true {
+        didSet { header.isHidden = !showsHeader }
+    }
     private let ribbon = UIImageView(image: UIImage(systemName: "bookmark.fill"))
 
     init(location: PageLocation, range: NSRange, pageCount: Int, chapterTitle: String, content: NSAttributedString, geometry: PageGeometry, colors: ThemeColors) {
@@ -378,6 +401,7 @@ final class PageViewController: UIViewController {
         fragment.textView.accessibilityHint = "Страница \(location.page + 1) из \(pageCount)"
         view.addSubview(fragment)
 
+        header.isHidden = !showsHeader
         for label in [header, footer] {
             label.font = UIFont.systemFont(ofSize: 12)
             label.textColor = colors.secondary

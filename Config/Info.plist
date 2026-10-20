@@ -50,6 +50,12 @@
 		<string>SourceSerif4-It.ttf</string>
 		<string>SourceSerif4-Bold.ttf</string>
 		<string>SourceSerif4-BoldIt.ttf</string>
+		<string>Andika-Regular.ttf</string>
+		<string>Andika-Italic.ttf</string>
+		<string>Andika-Bold.ttf</string>
+		<string>Andika-BoldItalic.ttf</string>
+		<string>OpenDyslexic-Regular.otf</string>
+		<string>OpenDyslexic-Bold.otf</string>
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
