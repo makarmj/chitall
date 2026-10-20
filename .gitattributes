@@ -5,3 +5,5 @@
 *.swift text eol=lf
 *.md text eol=lf
 *.ttf binary
+*.epub binary
+*.deflate binary

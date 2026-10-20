@@ -3,7 +3,7 @@ import Foundation
 import Compression
 #endif
 
-/// Just enough of the ZIP format to pull a single `.fb2` out of a `.fb2.zip`:
+/// Just enough of the ZIP format to read a `.fb2.zip` or an EPUB container:
 /// end-of-central-directory, central directory, local headers, methods "stored" and "deflate".
 /// Not supported (reported as errors): ZIP64, encryption, multi-disk archives, other methods.
 public struct ZipArchive: Sendable {
@@ -160,8 +160,17 @@ public struct ZipArchive: Sendable {
         return output
     }
     #else
-    public static let systemInflater: Inflater? = nil
+    /// No Compression framework (Linux, Windows): the portable decoder.
+    public static let systemInflater: Inflater? = portableInflater
     #endif
+
+    public static let portableInflater: Inflater = { compressed, expectedSize in
+        do {
+            return try PortableInflate.inflate(compressed, limit: expectedSize)
+        } catch {
+            throw Failure.damaged("deflate stream")
+        }
+    }
 
     private static func readUInt16(_ bytes: [UInt8], _ offset: Int) -> UInt16 {
         guard offset + 2 <= bytes.count else { return 0 }

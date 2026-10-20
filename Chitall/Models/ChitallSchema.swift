@@ -15,7 +15,7 @@ enum ChitallSchemaV1: VersionedSchema {
 
     @Model
     final class StoredBook {
-        /// `sha256:<hex>` of the stored `.fb2` bytes.
+        /// `sha256:<hex>` of the stored `.fb2` or `.epub` bytes.
         @Attribute(.unique) var fingerprint: String
         var title: String
         var authors: String

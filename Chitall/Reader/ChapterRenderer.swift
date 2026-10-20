@@ -117,7 +117,8 @@ enum ChapterRenderer {
     static func linkURL(_ target: String, isNote: Bool) -> URL? {
         var components = URLComponents()
         components.scheme = isNote ? noteScheme : linkScheme
-        components.path = target
+        // EPUB targets are `OEBPS/Text/ch1.xhtml#n1`: the `#` and spaces must stay in the path.
+        components.percentEncodedPath = target.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? target
         return components.url
     }
 

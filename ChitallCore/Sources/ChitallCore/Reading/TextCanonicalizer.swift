@@ -8,6 +8,10 @@
 /// 4. Trim the leading and trailing space.
 ///
 /// Other characters, including no-break space U+00A0, are kept as is.
+///
+/// EPUB only (`keepsLineBreaks`): `<br>` arrives as U+2028 LINE SEPARATOR. Whitespace around
+/// it is dropped, and so are line separators at the start and the end of the text, so a line
+/// break never comes with stray spaces. FB2 text is canonicalized without this rule.
 public struct TextCanonicalizer {
     public struct Segment: Sendable {
         public var text: String
@@ -32,12 +36,14 @@ public struct TextCanonicalizer {
         canonicalize([Segment(text: raw)]).text
     }
 
-    public static func canonicalize(_ segments: [Segment]) -> Result {
+    public static func canonicalize(_ segments: [Segment], keepsLineBreaks: Bool = false) -> Result {
         var output = String.UnicodeScalarView()
         var utf16Length = 0
         var runs: [InlineRun] = []
         // A collapsed space belongs to the run where the whitespace started.
         var pendingSpace: Segment?
+        // Line separators wait for the next visible character (EPUB `<br>`).
+        var pendingBreaks: [Segment] = []
 
         func emit(_ scalar: Unicode.Scalar, as segment: Segment) {
             let start = utf16Length
@@ -65,9 +71,14 @@ public struct TextCanonicalizer {
                 switch scalar {
                 case "\u{00AD}":
                     continue
+                case "\u{2028}" where keepsLineBreaks:
+                    pendingSpace = nil
+                    if !output.isEmpty { pendingBreaks.append(segment) }
                 case " ", "\t", "\n", "\r":
-                    if !output.isEmpty, pendingSpace == nil { pendingSpace = segment }
+                    if !output.isEmpty, pendingSpace == nil, pendingBreaks.isEmpty { pendingSpace = segment }
                 default:
+                    for owner in pendingBreaks { emit("\u{2028}", as: owner) }
+                    pendingBreaks = []
                     if let spaceOwner = pendingSpace {
                         emit(" ", as: spaceOwner)
                         pendingSpace = nil

@@ -123,7 +123,7 @@ struct LibraryView: View {
             Text("Здесь будут ваши книги")
                 .font(Typography.serif(.title2))
                 .foregroundStyle(Palette.ink)
-            Text("Импортируйте свой DRM-free файл FB2 или FB2.ZIP из «Файлов». Книга и заметки хранятся только на этом устройстве.")
+            Text("Импортируйте свой DRM-free файл EPUB, FB2 или FB2.ZIP из «Файлов». Книга и заметки хранятся только на этом устройстве.")
                 .font(.callout)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Palette.secondaryInk)
@@ -131,7 +131,7 @@ struct LibraryView: View {
             Button {
                 showsImporter = true
             } label: {
-                Text("Импортировать FB2")
+                Text("Импортировать книгу")
                     .frame(maxWidth: 240)
             }
             .buttonStyle(.borderedProminent)
@@ -198,7 +198,7 @@ struct BookRow: View {
     }
 }
 
-/// Embedded cover if the FB2 has one, otherwise a calm typographic placeholder.
+/// Embedded cover if the book has one, otherwise a calm typographic placeholder.
 struct BookCover: View {
     let book: StoredBook
     let files: BookFileStore

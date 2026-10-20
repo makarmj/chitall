@@ -7,7 +7,8 @@ enum BookFileTypes {
     /// (Config/Info.plist); asking by extension picks whatever the system actually resolved.
     static let fb2: UTType = UTType(filenameExtension: "fb2") ?? UTType(importedAs: "com.fbreader.book.fb2")
 
-    static var importable: [UTType] { [fb2, .zip, .xml] }
+    /// EPUB is a system type (`org.idpf.epub-container`), declared as handled in Info.plist.
+    static var importable: [UTType] { [fb2, .epub, .zip, .xml] }
 }
 
 @MainActor
@@ -41,13 +42,13 @@ final class BookImportService {
         descriptor.fetchLimit = 1
         if let existing = try context.fetch(descriptor).first {
             if !files.bookExists(named: existing.fileName) {
-                _ = try files.writeBook(imported.sourceData, fingerprint: fingerprint)
+                _ = try files.writeBook(imported.sourceData, fingerprint: fingerprint, format: imported.format)
             }
             return .alreadyInLibrary(existing)
         }
 
         let metadata = imported.book.metadata
-        let fileName = try files.writeBook(imported.sourceData, fingerprint: fingerprint)
+        let fileName = try files.writeBook(imported.sourceData, fingerprint: fingerprint, format: imported.format)
         let book = StoredBook(
             fingerprint: fingerprint,
             title: metadata.title.isEmpty ? Self.title(fromFileName: originalFileName) : metadata.title,
@@ -90,7 +91,7 @@ final class BookImportService {
 
     static func title(fromFileName name: String) -> String {
         var stem = name
-        for suffix in [".zip", ".fb2"] where stem.lowercased().hasSuffix(suffix) {
+        for suffix in [".epub", ".zip", ".fb2"] where stem.lowercased().hasSuffix(suffix) {
             stem = String(stem.dropLast(suffix.count))
         }
         return stem.isEmpty ? "Без названия" : stem

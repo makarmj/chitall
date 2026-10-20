@@ -8,7 +8,9 @@ Checks:
   * Info.plist and PrivacyInfo.xcprivacy are valid XML property lists with the expected keys;
   * the shared scheme and workspace are well-formed and point at real targets;
   * asset catalog JSON is valid and the app icon is a 1024x1024 PNG;
-  * bundled FB2 files are well-formed XML.
+  * Info.plist handles FB2 and EPUB (org.idpf.epub-container);
+  * bundled FB2 files are well-formed XML; generated EPUB fixtures start with a stored
+    `mimetype` and their XML is well-formed (except the ones broken on purpose).
 It does not replace building in Xcode.
 """
 
@@ -19,6 +21,7 @@ import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "Chitall.xcodeproj"
@@ -189,7 +192,14 @@ def check_plists():
     handled = {t for entry in info.get("CFBundleDocumentTypes", []) for t in entry.get("LSItemContentTypes", [])}
     if "com.fbreader.book.fb2" not in declared:
         fail("Info.plist: FB2 type is not declared")
-    if not handled <= declared | {"public.zip-archive"}:
+    # EPUB is declared by the system (org.idpf.epub-container), so the app only lists it as handled:
+    # without it the book is not offered in «Открыть в Chitall».
+    system_types = {"public.zip-archive", "org.idpf.epub-container"}
+    if "org.idpf.epub-container" not in handled:
+        fail("Info.plist: EPUB (org.idpf.epub-container) is not among CFBundleDocumentTypes")
+    if "com.fbreader.book.fb2" not in handled:
+        fail("Info.plist: FB2 is not among CFBundleDocumentTypes")
+    if not handled <= declared | system_types:
         fail("Info.plist: document types reference undeclared UTIs")
     fonts = ROOT / "Chitall" / "Resources" / "Fonts"
     for font in info.get("UIAppFonts", []):
@@ -242,6 +252,23 @@ def check_books():
             ET.parse(book)
         except ET.ParseError as error:
             fail(f"{book}: {error}")
+    # Generated EPUB fixtures (tools/make_epub_fixtures.py): mimetype first and stored, XML well-formed
+    # except the one that is broken on purpose.
+    for book in (ROOT / "ChitallCore" / "Tests").rglob("*.epub"):
+        with zipfile.ZipFile(book) as archive:
+            first = archive.infolist()[0]
+            if first.filename != "mimetype" or first.compress_type != zipfile.ZIP_STORED:
+                fail(f"{book.name}: mimetype must be the first entry, stored")
+            if book.name in ("broken-xhtml.epub", "drm.epub"):
+                continue
+            for name in archive.namelist():
+                if name.endswith((".opf", ".xhtml", ".html", ".ncx", ".xml")):
+                    try:
+                        ET.fromstring(archive.read(name).replace(b"&nbsp;", b"&#160;")
+                                      .replace(b"&laquo;", b"&#171;").replace(b"&raquo;", b"&#187;")
+                                      .replace(b"&mdash;", b"&#8212;").replace(b"&hellip;", b"&#8230;"))
+                    except ET.ParseError as error:
+                        fail(f"{book.name}/{name}: {error}")
 
 
 def main() -> int:
@@ -255,7 +282,7 @@ def main() -> int:
         for error in errors:
             print(" -", error)
         return 1
-    print(f"OK: pbxproj ({len(objects)} objects), plists, scheme, workspace, assets, FB2 resources")
+    print(f"OK: pbxproj ({len(objects)} objects), plists, scheme, workspace, assets, FB2 and EPUB resources")
     return 0
 
 

@@ -640,7 +640,7 @@ private struct MarginsIcon: View {
     }
 }
 
-/// Book details from the FB2 description.
+/// Book details from the FB2 description or the EPUB package.
 struct BookInfoSheet: View {
     let book: StoredBook
     let metadata: BookMetadata?
@@ -665,6 +665,7 @@ struct BookInfoSheet: View {
                 }
                 Section("Файл") {
                     LabeledContent("Имя", value: book.originalFileName)
+                    LabeledContent("Формат", value: book.formatName)
                     LabeledContent("Размер", value: ByteCountFormatter.string(fromByteCount: Int64(book.fileSize), countStyle: .file))
                     if let language = book.language { LabeledContent("Язык", value: language) }
                     LabeledContent("Глав", value: "\(book.chapterCount)")

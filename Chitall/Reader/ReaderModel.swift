@@ -147,7 +147,7 @@ final class ReaderModel {
         let files = self.files
         do {
             let parsed = try await Task.detached(priority: .userInitiated) { () throws -> ReadableBook in
-                try FB2Parser.parse(files.readBook(named: fileName)).book
+                try BookImporter.readStoredBook(files.readBook(named: fileName))
             }.value
             book = parsed
             service = LocatorService(book: parsed, fingerprint: fingerprint)
@@ -262,7 +262,7 @@ final class ReaderModel {
         return copy
     }
 
-    /// FB2 `lang` such as "ru", "be", "ru-RU" → a language code TextKit can hyphenate.
+    /// FB2 `lang` or EPUB `dc:language` such as "ru", "be", "ru-RU" → a language code TextKit can hyphenate.
     static func hyphenationLanguage(_ lang: String?) -> String {
         guard let lang, let code = lang.split(whereSeparator: { $0 == "-" || $0 == "_" }).first, !code.isEmpty else { return "ru" }
         return code.lowercased()

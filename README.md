@@ -1,6 +1,6 @@
 # Chitall
 
-Личная iPhone-читалка для исследовательского чтения: импорт своей DRM-free книги FB2, чтение, цветные выделения с мыслью и тегами, «Материалы» с поиском и фильтрами, экспорт в Markdown и JSON для работы с ИИ. Всё хранится на устройстве — без аккаунта, сети и аналитики.
+Личная iPhone-читалка для исследовательского чтения: импорт своей DRM-free книги EPUB или FB2, чтение, цветные выделения с мыслью и тегами, «Материалы» с поиском и фильтрами, экспорт в Markdown и JSON для работы с ИИ. Всё хранится на устройстве — без аккаунта, сети и аналитики.
 
 - Цель и MVP — [PRODUCT_BRIEF.md](PRODUCT_BRIEF.md)
 - Решения и альтернативы — [DECISIONS.md](DECISIONS.md)
@@ -14,8 +14,8 @@
 Chitall.xcodeproj   iOS 17+ проект (Xcode 16+, buildable folders)
 Chitall/            приложение: SwiftUI + UITextView (TextKit 1) + SwiftData
 ChitallTests/       тесты приложения (SwiftData, импорт, рендер, читалка)
-ChitallCore/        Swift-пакет без UIKit: FB2, модель книги, locator, экспорт + тесты
-Config/Info.plist   тип файла FB2, «Открыть в Chitall»
+ChitallCore/        Swift-пакет без UIKit: FB2, EPUB, модель книги, locator, экспорт + тесты
+Config/Info.plist   типы файлов FB2 и EPUB, «Открыть в Chitall»
 tools/              запуск тестов ядра на Windows, проверка проекта, генераторы
 ```
 

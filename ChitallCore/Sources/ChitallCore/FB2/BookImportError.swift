@@ -13,6 +13,10 @@ public enum BookImportError: Error, Equatable, Sendable {
     case archiveWithoutFB2
     case damagedArchive(String)
     case unsupportedArchive(String)
+    /// EPUB with encrypted content (Adobe, Apple, Readium LCP…): never decrypted.
+    case drmProtected
+    /// EPUB whose container or package is broken; the text says what, in Russian.
+    case damagedEPUB(String)
 
     public var userMessage: String {
         switch self {
@@ -33,11 +37,16 @@ public enum BookImportError: Error, Equatable, Sendable {
         case .noText:
             return "В книге нет ни одного абзаца текста."
         case .archiveWithoutFB2:
-            return "В архиве нет файла .fb2."
+            return "В архиве нет книги: ни файла .fb2, ни EPUB."
         case .damagedArchive:
             return "Архив повреждён."
         case let .unsupportedArchive(reason):
             return "Этот архив не поддерживается (\(reason)). Распакуйте его в «Файлах» и импортируйте .fb2."
+        case .drmProtected:
+            return "Книга защищена DRM: её текст зашифрован. Chitall открывает только книги без защиты — "
+                + "файлы, купленные без DRM, или свои собственные."
+        case let .damagedEPUB(reason):
+            return "Файл EPUB повреждён: \(reason)."
         }
     }
 }

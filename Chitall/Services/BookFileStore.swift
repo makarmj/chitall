@@ -1,7 +1,7 @@
 import Foundation
 
-/// Book files live in Application Support/Chitall: the exact imported `.fb2` bytes (locators
-/// refer to them) and extracted covers. Nothing leaves the device.
+/// Book files live in Application Support/Chitall: the exact imported `.fb2` or `.epub` bytes
+/// (locators refer to them) and extracted covers. Nothing leaves the device.
 struct BookFileStore: Sendable {
     let root: URL
 
@@ -31,8 +31,8 @@ struct BookFileStore: Sendable {
         fingerprint.hasPrefix(Fingerprint.prefix) ? String(fingerprint.dropFirst(Fingerprint.prefix.count)) : fingerprint
     }
 
-    func writeBook(_ data: Data, fingerprint: String) throws -> String {
-        let name = Self.stem(for: fingerprint) + ".fb2"
+    func writeBook(_ data: Data, fingerprint: String, format: BookFormat = .fb2) throws -> String {
+        let name = Self.stem(for: fingerprint) + "." + format.rawValue
         try data.write(to: booksDirectory.appendingPathComponent(name), options: .atomic)
         return name
     }

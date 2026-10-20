@@ -64,6 +64,19 @@ extension StoredBook {
     var readingPosition: Locator? {
         readingPositionJSON.flatMap { try? Locator.fromJSONString($0) }
     }
+
+    /// The stored file's extension is the format (`.epub` or `.fb2`); no schema change needed.
+    var format: BookFormat {
+        fileName.lowercased().hasSuffix(".epub") ? .epub : .fb2
+    }
+
+    /// "EPUB", "FB2" or "FB2 из архива ZIP" for «О книге».
+    var formatName: String {
+        switch format {
+        case .epub: return "EPUB"
+        case .fb2: return originalFileName.lowercased().hasSuffix(".zip") ? "FB2 из архива ZIP" : "FB2"
+        }
+    }
 }
 
 @MainActor
